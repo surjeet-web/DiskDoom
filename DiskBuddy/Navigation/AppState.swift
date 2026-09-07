@@ -2,11 +2,29 @@ import SwiftUI
 
 // MARK: - Prototype app state (mock scan engine + navigation for all 37 spec sections)
 
+@MainActor
 final class AppState: ObservableObject {
     enum OnboardingStep { case welcome, fullDiskAccess, scanTarget }
     enum SidebarTab: String, CaseIterable {
         case explore, duplicates, applications, monitor, snapshots
-        var title: String { rawValue.capitalized }
+        case litterScore, forecast, simulator, devCaches, health, budgets, liveFeed
+        var title: String {
+            switch self {
+            case .explore: return "Explore"
+            case .duplicates: return "Duplicates"
+            case .applications: return "Applications"
+            case .monitor: return "Monitor"
+            case .snapshots: return "Snapshots"
+            case .litterScore: return "Litter Score"
+            case .forecast: return "Forecast"
+            case .simulator: return "What If?"
+            case .devCaches: return "Dev Caches"
+            case .health: return "Health"
+            case .budgets: return "Budgets"
+            case .liveFeed: return "Live Feed"
+            }
+        }
+
         var symbol: String {
             switch self {
             case .explore: return "magnifyingglass"
@@ -14,7 +32,24 @@ final class AppState: ObservableObject {
             case .applications: return "app.badge"
             case .monitor: return "chart.line.uptrend.xyaxis"
             case .snapshots: return "camera"
+            case .litterScore: return "gauge.with.dots.needle.67percent"
+            case .forecast: return "chart.line.uptrend.xyaxis"
+            case .simulator: return "arrow.triangle.2.circlepath"
+            case .devCaches: return "hammer.fill"
+            case .health: return "heart.text.square"
+            case .budgets: return "gauge.with.dots.needle.33percent"
+            case .liveFeed: return "antenna.radiowaves.left.and.right"
             }
+        }
+
+        /// Tabs shown in the main Navigate section (spec §37: ⌘1–⌘5).
+        static var primary: [SidebarTab] {
+            [.explore, .duplicates, .applications, .monitor, .snapshots]
+        }
+
+        /// Differentiation tabs (D1–D13), no global shortcuts to avoid clashes.
+        static var insights: [SidebarTab] {
+            [.litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed]
         }
     }
 
@@ -100,37 +135,43 @@ final class AppState: ObservableObject {
         scanPhase = .scanning
         scanProgress = 0
         scanFiles = 0
-        let paths = [
-            "/System/Library/Extensions",
-            "/Applications/Google Chrome.app",
-            "/Users/you/Library/Caches",
-            "/Users/you/Library/Application Support",
-            "/Library/Logs",
-            "/Users/you/Downloads",
-        ]
-        var tick = 0
+        scanTickCount = 0
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            DispatchQueue.main.async {
-                tick += 1
-                self.scanProgress = min(1, self.scanProgress + 0.02)
-                self.scanFiles = Int(Double(MockScanData.totalFiles) * self.scanProgress)
-                self.scanPath = "Scanning \(paths[tick % paths.count])"
-                if self.scanProgress >= 1 {
-                    t.invalidate()
-                    // Prototype rule to demo §31B: external targets fail.
-                    if self.scanTargetName.hasPrefix("/Volumes") {
-                        self.scanPhase = .failed
-                    } else {
-                        self.scanPhase = .done
-                        self.selectedNode = MockScanData.topLevel.first
-                        self.banner = Banner(message: "Scan complete · 1,892,341 files · 256 GB · 9.2s", actionTitle: "View Results")
-                    }
-                }
+        // Timer fires on the main runloop; hop into a @MainActor task so no
+        // non-Sendable state crosses into the @Sendable timer closure.
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            Task { @MainActor [weak self] in self?.scanTick() }
+        }
+    }
+
+    private var scanTickCount = 0
+
+    private func scanTick() {
+        scanTickCount += 1
+        scanProgress = min(1, scanProgress + 0.02)
+        scanFiles = Int(Double(MockScanData.totalFiles) * scanProgress)
+        scanPath = "Scanning \(scanPaths[scanTickCount % scanPaths.count])"
+        if scanProgress >= 1 {
+            timer?.invalidate()
+            // Prototype rule to demo §31B: external targets fail.
+            if scanTargetName.hasPrefix("/Volumes") {
+                scanPhase = .failed
+            } else {
+                scanPhase = .done
+                selectedNode = MockScanData.topLevel.first
+                banner = Banner(message: "Scan complete · 1,892,341 files · 256 GB · 9.2s", actionTitle: "View Results")
             }
         }
     }
+
+    private let scanPaths = [
+        "/System/Library/Extensions",
+        "/Applications/Google Chrome.app",
+        "/Users/you/Library/Caches",
+        "/Users/you/Library/Application Support",
+        "/Library/Logs",
+        "/Users/you/Downloads",
+    ]
 
     func cancelScan() {
         timer?.invalidate()

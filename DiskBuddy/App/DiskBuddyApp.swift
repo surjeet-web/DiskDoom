@@ -3,11 +3,25 @@ import SwiftUI
 @main
 struct DiskBuddyApp: App {
     @StateObject private var state = AppState()
+    @StateObject private var litterEngine = LitterScoreEngine()
+    @StateObject private var forecastEngine = DiskForecastEngine()
+    @StateObject private var simulator = WhatIfSimulator()
+    @StateObject private var devCacheEngine = DevCacheEngine()
+    @StateObject private var healthEngine = DiskHealthEngine()
+    @StateObject private var budgetEngine = SpaceBudgetEngine()
+    @StateObject private var feedMonitor = FileFeedMonitor()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(state)
+                .environmentObject(litterEngine)
+                .environmentObject(forecastEngine)
+                .environmentObject(simulator)
+                .environmentObject(devCacheEngine)
+                .environmentObject(healthEngine)
+                .environmentObject(budgetEngine)
+                .environmentObject(feedMonitor)
         }
         .defaultSize(width: 1100, height: 700)
         .commands {
@@ -61,6 +75,18 @@ struct DiskBuddyApp: App {
                     .keyboardShortcut("4", modifiers: .command)
                 Button("Snapshots") { state.sidebarTab = .snapshots }
                     .keyboardShortcut("5", modifiers: .command)
+                Divider()
+                Button("Litter Score") { state.sidebarTab = .litterScore }
+                    .keyboardShortcut("6", modifiers: .command)
+                Button("Forecast") { state.sidebarTab = .forecast }
+                    .keyboardShortcut("7", modifiers: .command)
+                Button("What If?") { state.sidebarTab = .simulator }
+                    .keyboardShortcut("8", modifiers: .command)
+                Button("Dev Caches") { state.sidebarTab = .devCaches }
+                    .keyboardShortcut("9", modifiers: .command)
+                Button("Health") { state.sidebarTab = .health }
+                Button("Budgets") { state.sidebarTab = .budgets }
+                Button("Live Feed") { state.sidebarTab = .liveFeed }
             }
         }
 

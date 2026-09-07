@@ -142,7 +142,7 @@ struct MainWindowView: View {
     private var sidebar: some View {
         List(selection: $state.sidebarTab) {
             Section("Navigate") {
-                ForEach(AppState.SidebarTab.allCases, id: \.self) { tab in
+                ForEach(AppState.SidebarTab.primary, id: \.self) { tab in
                     let shortcut = ["explore": 1, "duplicates": 2, "applications": 3, "monitor": 4, "snapshots": 5][tab.rawValue] ?? 0
                     Label {
                         HStack {
@@ -156,6 +156,12 @@ struct MainWindowView: View {
                         Image(systemName: tab.symbol)
                     }
                     .tag(tab)
+                }
+            }
+            Section("Insights") {
+                ForEach(AppState.SidebarTab.insights, id: \.self) { tab in
+                    Label(tab.title, systemImage: tab.symbol)
+                        .tag(tab)
                 }
             }
             Section("Favorites") {
@@ -234,6 +240,13 @@ struct MainWindowView: View {
             case .applications: ApplicationsView()
             case .monitor: MonitorView()
             case .snapshots: SnapshotsView()
+            case .litterScore: LitterScoreView()
+            case .forecast: DiskForecastView()
+            case .simulator: WhatIfView()
+            case .devCaches: DevCacheView()
+            case .health: DiskHealthView()
+            case .budgets: SpaceBudgetView()
+            case .liveFeed: FileFeedView()
             }
         }
     }
