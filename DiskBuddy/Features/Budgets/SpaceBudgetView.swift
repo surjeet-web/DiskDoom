@@ -19,7 +19,7 @@ struct SpaceBudgetView: View {
             .padding(DesignTokens.Space.m)
             Divider()
             if engine.statuses.isEmpty {
-                EmptyState(symbol: "gauge.with.dots.needle.33percent", title: "No budgets set", message: "Set limits for caches, logs, and other categories. DiskBuddy will alert you when they're exceeded.", actionTitle: "Add Your First Budget", action: { showingAdd = true })
+                EmptyState(symbol: "gauge.with.dots.needle.33percent", title: "No budgets set", message: "Set limits for caches, logs, and other categories. DiskDoom will alert you when they're exceeded.", actionTitle: "Add Your First Budget", action: { showingAdd = true })
             } else {
                 ScrollView {
                     VStack(spacing: DesignTokens.Space.m) {

@@ -57,7 +57,7 @@ struct SnapshotsView: View {
         let rows: [[String]] = [["Date", "Label", "Target", "Total Bytes", "Files"]] + state.snapshots.map {
             [dateText.string(from: $0.date), $0.label, $0.target, "\($0.totalBytes)", "\($0.files)"]
         }
-        _ = ExportService.csvURL(rows: rows, suggestedName: "diskbuddy-snapshots.csv")
+        _ = ExportService.csvURL(rows: rows, suggestedName: "diskdoom-snapshots.csv")
     }
 }
 
@@ -178,7 +178,7 @@ private struct SnapshotComparisonView: View {
                 Spacer()
                 Button("Export CSV") {
                     let rows = [["Folder", "Old Bytes", "New Bytes", "Delta"]] + rows.map { [$0.name, "\($0.old)", "\($0.new)", "\($0.new - $0.old)"] }
-                    _ = ExportService.csvURL(rows: rows, suggestedName: "diskbuddy-comparison.csv")
+                    _ = ExportService.csvURL(rows: rows, suggestedName: "diskdoom-comparison.csv")
                 }
                 .buttonStyle(.bordered)
                 .disabled(rows.isEmpty)

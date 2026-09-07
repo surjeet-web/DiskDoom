@@ -50,9 +50,11 @@ struct TreemapView: View {
                             Button("Info") { state.selectedNode = cell.node }
                         }
                         .onTapGesture(count: 2) {
-                            // Double-click: drill down (spec §05).
                             if !cell.node.children.isEmpty {
                                 drillPath.append(cell.node)
+                            } else if cell.node.isCollapsed {
+                                // Smart leaf: measure on demand, stay in place.
+                                state.expandNode(path: cell.node.path)
                             }
                         }
                         .onTapGesture {
@@ -107,6 +109,12 @@ private struct TreemapCell: View {
                     Text(node.sizeString)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.white.opacity(0.85))
+                    if node.isCollapsed {
+                        Text("▸ \(node.fileCount.formatted()) files · ×2 to expand")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.75))
+                            .lineLimit(1)
+                    }
                 }
                 .padding(DesignTokens.Space.s)
             }

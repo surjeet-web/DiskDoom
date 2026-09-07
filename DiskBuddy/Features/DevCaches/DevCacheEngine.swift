@@ -80,7 +80,7 @@ final class DevCacheEngine: ObservableObject, @unchecked Sendable {
             DevCacheItem(kind: .node, name: "node_modules", path: "\(home)/Projects/webapp/node_modules", bytes: 1_900_000_000, project: "webapp"),
             DevCacheItem(kind: .node, name: "npm cache", path: "\(home)/.npm", bytes: 1_200_000_000, project: nil),
             DevCacheItem(kind: .homebrew, name: "Homebrew cache", path: "\(home)/Library/Caches/Homebrew", bytes: 2_600_000_000, project: nil),
-            DevCacheItem(kind: .swiftpm, name: "SPM checkouts", path: "\(home)/Library/Developer/Xcode/DerivedData/DiskBuddy/SourcePackages", bytes: 800_000_000, project: nil),
+            DevCacheItem(kind: .swiftpm, name: "SPM checkouts", path: "\(home)/Library/Developer/Xcode/DerivedData/DiskDoom/SourcePackages", bytes: 800_000_000, project: nil),
             DevCacheItem(kind: .git, name: ".git", path: "\(home)/Projects/monorepo/.git", bytes: 900_000_000, project: "monorepo"),
             DevCacheItem(kind: .python, name: "pip cache", path: "\(home)/Library/Caches/pip", bytes: 600_000_000, project: nil),
             DevCacheItem(kind: .rust, name: "cargo registry", path: "\(home)/.cargo/registry", bytes: 1_100_000_000, project: nil),

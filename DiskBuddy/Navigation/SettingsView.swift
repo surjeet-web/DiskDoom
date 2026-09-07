@@ -38,7 +38,7 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         Form {
             Section("Startup") {
-                Toggle("Launch DiskBuddy at login", isOn: Binding(
+                Toggle("Launch DiskDoom at login", isOn: Binding(
                     get: { loginEnabled },
                     set: { loginEnabled = $0; applyLoginItem() }))
             }
@@ -91,7 +91,7 @@ private struct GeneralSettingsTab: View {
                     Text("Weekly").tag("weekly")
                     Text("Monthly").tag("monthly")
                 }
-                Text("Scheduled scans run when DiskBuddy is open (requires Launch at Login for background runs).")
+                Text("Scheduled scans run when DiskDoom is open (requires Launch at Login for background runs).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

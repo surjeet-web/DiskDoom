@@ -18,9 +18,7 @@ struct ScanProgressView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.xl) {
             Spacer()
-            Image(systemName: "circle.dotted")
-                .font(.system(size: 64))
-                .foregroundStyle(.tint)
+            ScanAnimationView(size: 150)
             Text("Scanning \(state.scanTargetName)")
                 .font(.headline)
             Text(state.scanPath.isEmpty ? "Preparing scan…" : state.scanPath)

@@ -19,6 +19,68 @@ struct ScanOptions: Sendable {
     var excludedPaths: [String] = []
     var maxFiles = 1_000_000
     var maxChildrenPerDir = 300
+    var collapseSmartLeaves = true
+    var maxNodes = 400_000 // scan budget: files walked before collapsing rest
+    var maxScanSeconds = 240.0 // scan budget: wall-clock cap
+}
+
+// MARK: - Directory classification: normal vs collapsed vs package
+//
+// Smart leaves are COLLAPSED, not inaccessible: the aggregate (size + file
+// count + reason) is measured with a lightweight lstat walk — no per-file
+// records, no tree nodes, no DB rows. Double-click expands on demand.
+// Cheap signals only (name/path/package bit); never measure-to-decide.
+
+enum DirectoryKind: Sendable {
+    case normal
+    case package
+    case smartLeaf(reason: String)
+
+    private static let sourceControl: Set<String> = [".git", ".svn", ".hg", ".jj"]
+    private static let dependencyStores: Set<String> = [
+        "node_modules", "bower_components", "vendor", ".pub-cache", ".nuget",
+        "packages", "Pods", "Carthage", ".cargo", ".m2", ".gradle", ".npm",
+        ".yarn", ".pnpm-store",
+    ]
+    private static let buildArtifacts: Set<String> = [
+        "DerivedData", "Build", "BuildProductsPath", "dist", "build", "out",
+        "coverage", "target", "obj", "bin", ".next", ".nuxt", ".output",
+        ".svelte-kit", ".astro", ".turbo", ".parcel-cache", ".cache",
+        "SourcePackages", "Index.noindex", "ModuleCache.noindex", "xcuserdata",
+        ".build", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        ".tox", ".terraform", ".terraform.d", "zig-cache", ".zig-cache",
+        ".venv", "venv", "env",
+    ]
+    private static let cacheDirs: Set<String> = [
+        "Caches", "Cache", "Code Cache", "GPUCache", "DawnCache", "Crashpad",
+        "Service Worker",
+    ]
+    private static let vmDirs: Set<String> = [
+        "Virtual Machines", "Parallels", "VMware", "VMware Fusion", "UTM",
+    ]
+
+    static func classify(name: String, path: String, isPackage: Bool) -> DirectoryKind {
+        if isPackage { return .package }
+        if path.contains("com.docker.docker") || path.contains("group.com.docker") {
+            return .smartLeaf(reason: "Virtualized container storage")
+        }
+        if sourceControl.contains(name) {
+            return .smartLeaf(reason: "Version control data — drill in to index")
+        }
+        if dependencyStores.contains(name) {
+            return .smartLeaf(reason: "Dependency store — drill in to index")
+        }
+        if buildArtifacts.contains(name) {
+            return .smartLeaf(reason: "Build output — drill in to index")
+        }
+        if cacheDirs.contains(name) {
+            return .smartLeaf(reason: "Cache data — safe to clean")
+        }
+        if vmDirs.contains(name) {
+            return .smartLeaf(reason: "Virtual machine storage")
+        }
+        return .normal
+    }
 }
 
 struct ScanResult: Sendable {
@@ -50,10 +112,13 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         var counter = 0
         var dirCount = 0
         var visited = Set<DevIno>()
+        var budgetHit = false
+        let startedAt = Date()
         let node = scanDir(
             url: root, name: label, path: root.path, depth: 0,
             options: options, records: &records, skipped: &skipped,
             counter: &counter, dirCount: &dirCount, visited: &visited,
+            budgetHit: &budgetHit, startedAt: startedAt,
             progress: { [weak self] currentDir, count in
                 guard let self else { return }
                 // Copy into Sendable locals before hopping threads.
@@ -85,10 +150,20 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         url: URL, name: String, path: String, depth: Int,
         options: ScanOptions, records: inout [ScannedRecord], skipped: inout [String],
         counter: inout Int, dirCount: inout Int, visited: inout Set<DevIno>,
+        budgetHit: inout Bool, startedAt: Date,
         progress: (String, Int) -> Void
     ) -> ScanNode? {
         if Task.isCancelled { return nil }
         if options.maxDepth > 0 && depth > options.maxDepth { return nil }
+        // Scan budget: stop descending once hit; the scan reports partial
+        // instead of grinding forever on pathological trees.
+        if counter > options.maxNodes || Date().timeIntervalSince(startedAt) > options.maxScanSeconds {
+            if !budgetHit {
+                budgetHit = true
+                skipped.append("Scan budget reached at \(path) — deeper items omitted, drill in to measure them directly")
+            }
+            return nil
+        }
         let fm = FileManager.default
         var resourceValues: URLResourceValues?
         do {
@@ -120,6 +195,31 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         guard visited.insert(identity).inserted else { return nil } // already walked
         dirCount += 1
         if dirCount % 25 == 0 { progress(path, counter) }
+        // Packages are leaves: measure the bundle total, never descend.
+        // (Fixes bundles previously reporting ~0 bytes.)
+        let isPackage = resourceValues?.isPackage ?? false
+        if isPackage {
+            let size = totalLogicalSize(url: url)
+            counter += 1
+            return ScanNode(name: name, path: path, sizeBytes: size, category: .applications, fileCount: 1, modified: fileMeta(path: path).mtime, physicalBytes: size)
+        }
+        // Smart leaves: aggregate totals with a record-free lstat walk.
+        if options.collapseSmartLeaves, depth > 0 {
+            switch DirectoryKind.classify(name: name, path: path, isPackage: false) {
+            case .smartLeaf(let reason):
+                let aggregate = aggregateSubtree(
+                    url: url, options: options, visited: &visited,
+                    counter: &counter, skipped: &skipped,
+                    budgetHit: &budgetHit, startedAt: startedAt, progress: progress)
+                return ScanNode(
+                    name: name, path: path, sizeBytes: aggregate.bytes,
+                    category: classify(path: path), fileCount: aggregate.files,
+                    modified: fileMeta(path: path).mtime, physicalBytes: aggregate.bytes,
+                    isCollapsed: true, collapseReason: reason)
+            case .package, .normal:
+                break
+            }
+        }
         // Directory: enumerate children.
         var dirOptions: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
         if !options.includeHidden { dirOptions.insert(.skipsHiddenFiles) }
@@ -137,7 +237,7 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
             if Task.isCancelled { break }
             let childPath = child.path
             if options.excludedPaths.contains(where: { childPath.hasPrefix($0) }) { continue }
-            if let childNode = scanDir(url: child, name: child.lastPathComponent, path: childPath, depth: depth + 1, options: options, records: &records, skipped: &skipped, counter: &counter, dirCount: &dirCount, visited: &visited, progress: progress) {
+            if let childNode = scanDir(url: child, name: child.lastPathComponent, path: childPath, depth: depth + 1, options: options, records: &records, skipped: &skipped, counter: &counter, dirCount: &dirCount, visited: &visited, budgetHit: &budgetHit, startedAt: startedAt, progress: progress) {
                 nodes.append(childNode)
                 total += childNode.sizeBytes
                 fileCount += childNode.fileCount
@@ -157,6 +257,83 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
     }
 
     // MARK: Metadata + classification
+
+    /// Lightweight aggregate walk for smart leaves: lstat totals only —
+    /// no ScanNode allocations, no records, no DB rows. Shares the visited
+    /// set (no double counting) and honors cancellation + budget.
+    private func aggregateSubtree(
+        url: URL, options: ScanOptions, visited: inout Set<DevIno>,
+        counter: inout Int, skipped: inout [String],
+        budgetHit: inout Bool, startedAt: Date,
+        progress: (String, Int) -> Void
+    ) -> (bytes: Int64, files: Int) {
+        if Task.isCancelled { return (0, 0) }
+        if counter > options.maxNodes || Date().timeIntervalSince(startedAt) > options.maxScanSeconds {
+            if !budgetHit {
+                budgetHit = true
+                skipped.append("Scan budget reached inside \(url.path) — drill in to measure it directly")
+            }
+            return (0, 0)
+        }
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else { return (0, 0) }
+        if (st.st_mode & S_IFMT) != S_IFDIR {
+            counter += 1
+            return (Int64(st.st_size), 1)
+        }
+        // No visited-set check here: the caller already inserted this
+        // directory, and symlinks are never descended (lstat above), so
+        // cycles are impossible. (The redundant check used to reject the
+        // entry inode and zero out every smart leaf.) Still record
+        // descendants so the rest of the walk dedups against them.
+        _ = visited.insert(DevIno(dev: st.st_dev, ino: st.st_ino))
+        var dirOptions: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        if !options.includeHidden { dirOptions.insert(.skipsHiddenFiles) }
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: dirOptions)
+        else { return (0, 0) }
+        var bytes: Int64 = 0
+        var files = 0
+        for child in children {
+            if Task.isCancelled { break }
+            let sub = aggregateSubtree(
+                url: child, options: options, visited: &visited,
+                counter: &counter, skipped: &skipped,
+                budgetHit: &budgetHit, startedAt: startedAt, progress: progress)
+            bytes += sub.bytes
+            files += sub.files
+            if files % 5000 == 0 { progress(url.path, counter) }
+        }
+        return (bytes, files)
+    }
+
+    /// On-demand expansion of a collapsed node: measures just that subtree
+    /// (smart leaves stay on inside it, depth-capped) for drill-in.
+    func expandSubtree(path: String, options: ScanOptions) -> (children: [ScanNode], records: [ScannedRecord]) {
+        var records: [ScannedRecord] = []
+        var skipped: [String] = []
+        var counter = 0
+        var dirCount = 0
+        var visited = Set<DevIno>()
+        var budgetHit = false
+        var opts = options
+        opts.maxDepth = 4
+        let url = URL(fileURLWithPath: path)
+        guard let node = scanDir(
+            url: url, name: url.lastPathComponent, path: path, depth: 0,
+            options: opts, records: &records, skipped: &skipped,
+            counter: &counter, dirCount: &dirCount, visited: &visited,
+            budgetHit: &budgetHit, startedAt: Date(),
+            progress: { _, _ in })
+        else { return ([], []) }
+        return (node.children, records)
+    }
+
+    /// Recursive logical size for package leaves (no enumeration of objects).
+    private func totalLogicalSize(url: URL) -> Int64 {
+        (try? url.resourceValues(forKeys: [.totalFileSizeKey]))?.totalFileSize.map(Int64.init) ?? 0
+    }
 
     private func fileMeta(path: String) -> (logical: Int64, physical: Int64, mtime: Date) {
         var st = stat()

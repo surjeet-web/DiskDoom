@@ -37,7 +37,7 @@ struct FDADeniedView: View {
             ErrorCard(
                 symbol: "lock.fill",
                 title: "Full Disk Access Required",
-                message: "DiskBuddy needs Full Disk Access to scan system folders and application caches. Without it, only user-selected folders can be scanned.",
+                message: "DiskDoom needs Full Disk Access to scan system folders and application caches. Without it, only user-selected folders can be scanned.",
                 tint: .orange)
             Button("Open System Settings") {
                 if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {

@@ -1,7 +1,9 @@
 import SwiftUI
 
 @main
-struct DiskBuddyApp: App {
+struct DiskDoomApp: App {
+    @Environment(\.openWindow) private var openWindow
+
     @StateObject private var state = AppState()
     @StateObject private var recommendationsEngine = RecommendationsEngine()
     @StateObject private var litterEngine = LitterScoreEngine()
@@ -19,56 +21,65 @@ struct DiskBuddyApp: App {
     @StateObject private var photoAnalyzer = PhotoLibraryAnalyzer()
     @StateObject private var topology = DiskTopologyService()
     @StateObject private var coordinator = LaunchCoordinator()
+    @State private var showSplash = true
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(state)
-                .environmentObject(litterEngine)
-                .environmentObject(forecastEngine)
-                .environmentObject(simulator)
-                .environmentObject(devCacheEngine)
-                .environmentObject(healthEngine)
-                .environmentObject(budgetEngine)
-                .environmentObject(feedMonitor)
-                .environmentObject(lifecycleEngine)
-                .environmentObject(provenanceEngine)
-                .environmentObject(compressionEngine)
-                .environmentObject(containerScanner)
-                .environmentObject(privacyEngine)
-                .environmentObject(photoAnalyzer)
-                .environmentObject(recommendationsEngine)
-                .environmentObject(state.permissions)
-                .environmentObject(state.notifications)
-                .environmentObject(state.license)
-                .environmentObject(state.dupFinder)
-                .environmentObject(topology)
-                .environmentObject(coordinator)
-                .task {
-                    // Window is already visible here — jobs hydrate progressively.
-                    LaunchJobs.registerAll(
-                        on: coordinator, state: state,
-                        litter: litterEngine, health: healthEngine,
-                        forecast: forecastEngine, lifecycle: lifecycleEngine,
-                        devcaches: devCacheEngine, budgets: budgetEngine,
-                        compression: compressionEngine, privacy: privacyEngine,
-                        topology: topology)
-                    await coordinator.runAll()
+            ZStack {
+                ContentView()
+                    .environmentObject(state)
+                    .environmentObject(litterEngine)
+                    .environmentObject(forecastEngine)
+                    .environmentObject(simulator)
+                    .environmentObject(devCacheEngine)
+                    .environmentObject(healthEngine)
+                    .environmentObject(budgetEngine)
+                    .environmentObject(feedMonitor)
+                    .environmentObject(lifecycleEngine)
+                    .environmentObject(provenanceEngine)
+                    .environmentObject(compressionEngine)
+                    .environmentObject(containerScanner)
+                    .environmentObject(privacyEngine)
+                    .environmentObject(photoAnalyzer)
+                    .environmentObject(recommendationsEngine)
+                    .environmentObject(state.permissions)
+                    .environmentObject(state.notifications)
+                    .environmentObject(state.license)
+                    .environmentObject(state.dupFinder)
+                    .environmentObject(topology)
+                    .environmentObject(coordinator)
+                    .task {
+                        // Window is already visible here — jobs hydrate progressively.
+                        LaunchJobs.registerAll(
+                            on: coordinator, state: state,
+                            litter: litterEngine, health: healthEngine,
+                            forecast: forecastEngine, lifecycle: lifecycleEngine,
+                            devcaches: devCacheEngine, budgets: budgetEngine,
+                            compression: compressionEngine, privacy: privacyEngine,
+                            topology: topology)
+                        await coordinator.runAll()
+                    }
+                if showSplash {
+                    SplashScreen { showSplash = false }
+                        .transition(.opacity)
                 }
+            }
         }
         .defaultSize(width: 1100, height: 700)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About DiskDoom") { openWindow(id: "about") }
+            }
             // §37 menu bar structure (prototype subset).
             CommandGroup(replacing: .newItem) {
                 Button("New Scan") { state.startScan() }
                     .keyboardShortcut("r", modifiers: .command)
                 Button("Save Snapshot") {
-                    state.snapshots.insert(
-                        Snapshot(date: Date(), label: "Just now", totalBytes: 256_000_000_000, files: 1_892_341, target: state.scanTargetName),
-                        at: 0)
+                    state.saveSnapshotFromCurrentScan(label: "Manual")
+                    state.sidebarTab = .snapshots
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-                .disabled(state.scanPhase != .done)
+                .disabled(state.scanRoot == nil)
             }
             CommandMenu("Edit") {
                 Button("Copy Path") {
@@ -88,13 +99,20 @@ struct DiskBuddyApp: App {
                 Button("Open Cleanup Queue") { state.showCleanup = true }
                     .keyboardShortcut("k", modifiers: [.command, .shift])
                 Divider()
-                // 8 viz modes (§37): ⌥⌘1–8 to avoid clashing with ⌘1–5 tabs.
-                ForEach(Array(AppState.ExploreView.allCases.enumerated()), id: \.element) { index, view in
+                // First 8 viz modes: ⌥⌘1–8. (Views 9–12 have no shortcut:
+                // KeyEquivalent traps on multi-char strings like "10".)
+                ForEach(Array(AppState.ExploreView.allCases.prefix(8).enumerated()), id: \.element) { index, view in
                     Button("Show \(view.title)") {
                         state.sidebarTab = .explore
                         state.exploreView = view
                     }
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
+                }
+                ForEach(AppState.ExploreView.allCases.dropFirst(8), id: \.self) { view in
+                    Button("Show \(view.title)") {
+                        state.sidebarTab = .explore
+                        state.exploreView = view
+                    }
                 }
             }
             CommandMenu("Go") {
@@ -132,6 +150,13 @@ struct DiskBuddyApp: App {
                 Button("Folders") { state.sidebarTab = .folders }
             }
         }
+
+        Window("About DiskDoom", id: "about") {
+            AboutView()
+                .background(Color(red: 0.06, green: 0.06, blue: 0.1))
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 360, height: 520)
 
         Settings {
             SettingsView()

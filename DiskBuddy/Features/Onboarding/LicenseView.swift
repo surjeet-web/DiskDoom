@@ -16,7 +16,7 @@ struct LicenseView: View {
                 .foregroundStyle(store.isLicensed ? .green : Color.accentColor)
             if store.isLicensed {
                 // §30 success.
-                Text("DiskBuddy is Activated!")
+                Text("DiskDoom is Activated!")
                     .font(.title2.weight(.semibold))
                 Text("All features are unlocked. License ID and device token are stored in the macOS Keychain — nothing sensitive touches disk or the repo.")
                     .font(.body)
@@ -40,7 +40,7 @@ struct LicenseView: View {
                 .disabled(store.isWorking)
             } else {
                 // §29 activation.
-                Text("Activate DiskBuddy")
+                Text("Activate DiskDoom")
                     .font(.title2.weight(.semibold))
                 Text("Enter your license key and purchase email.")
                     .font(.body)

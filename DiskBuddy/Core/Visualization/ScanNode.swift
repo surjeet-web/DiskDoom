@@ -56,8 +56,12 @@ struct ScanNode: Identifiable, Hashable, Codable, Sendable {
     /// Real scan metadata (nil for mock data).
     let modified: Date?
     let physicalBytes: Int64?
+    /// Smart-leaf collapsing: aggregate measured without per-file indexing.
+    /// Double-click expands on demand.
+    let isCollapsed: Bool
+    let collapseReason: String?
 
-    init(id: UUID = UUID(), name: String, path: String, sizeBytes: Int64, category: NodeCategory, fileCount: Int, children: [ScanNode] = [], modified: Date? = nil, physicalBytes: Int64? = nil) {
+    init(id: UUID = UUID(), name: String, path: String, sizeBytes: Int64, category: NodeCategory, fileCount: Int, children: [ScanNode] = [], modified: Date? = nil, physicalBytes: Int64? = nil, isCollapsed: Bool = false, collapseReason: String? = nil) {
         self.id = id
         self.name = name
         self.path = path
@@ -67,6 +71,8 @@ struct ScanNode: Identifiable, Hashable, Codable, Sendable {
         self.children = children
         self.modified = modified
         self.physicalBytes = physicalBytes
+        self.isCollapsed = isCollapsed
+        self.collapseReason = collapseReason
     }
 
     var sizeString: String {

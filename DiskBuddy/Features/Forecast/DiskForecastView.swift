@@ -58,7 +58,7 @@ struct DiskForecastView: View {
                 }
                 .padding()
             } else {
-                EmptyState(symbol: "chart.line.uptrend.xyaxis", title: "Need at least 2 snapshots to forecast", message: "Save snapshots over time and DiskBuddy will predict when you'll run out of space.")
+                EmptyState(symbol: "chart.line.uptrend.xyaxis", title: "Need at least 2 snapshots to forecast", message: "Save snapshots over time and DiskDoom will predict when you'll run out of space.")
             }
         }
         .onAppear { if engine.forecast == nil { engine.compute() } }

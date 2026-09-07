@@ -28,7 +28,7 @@ struct PhotoLibraryView: View {
             Divider()
             switch analyzer.access {
             case .unchecked:
-                EmptyState(symbol: "photo.on.rectangle.angled", title: "Analyze your Photos library", message: "DiskBuddy checks access first — nothing is fabricated when the library can't be read.", actionTitle: "Check Access", action: { analyzer.checkAccess() })
+                EmptyState(symbol: "photo.on.rectangle.angled", title: "Analyze your Photos library", message: "DiskDoom checks access first — nothing is fabricated when the library can't be read.", actionTitle: "Check Access", action: { analyzer.checkAccess() })
             case .checking:
                 ProgressView("Checking library access…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -38,7 +38,7 @@ struct PhotoLibraryView: View {
                     Image(systemName: "lock.fill").font(.system(size: 48)).foregroundStyle(.orange)
                     Text("Can't read the Photos library")
                         .font(.title3.weight(.semibold))
-                    Text("\(path)\n\nThis usually means the library is elsewhere, or macOS denied access (Photos libraries need your consent under TCC). Grant Full Disk Access or enter the correct path above — DiskBuddy won't guess numbers.")
+                    Text("\(path)\n\nThis usually means the library is elsewhere, or macOS denied access (Photos libraries need your consent under TCC). Grant Full Disk Access or enter the correct path above — DiskDoom won't guess numbers.")
                         .font(.callout).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 440)
@@ -79,7 +79,7 @@ struct PhotoLibraryView: View {
                                 }
                                 .padding(DesignTokens.Space.s)
                                 .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
-                                Text("Recently Deleted can only be emptied inside the Photos app — DiskBuddy never deletes it silently.")
+                                Text("Recently Deleted can only be emptied inside the Photos app — DiskDoom never deletes it silently.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }

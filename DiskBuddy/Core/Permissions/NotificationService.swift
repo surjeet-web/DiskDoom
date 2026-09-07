@@ -40,7 +40,7 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
     }
 
     func postMonitorAlert(appName: String, bytes: Int64) {
-        post(title: "DiskBuddy",
+        post(title: "DiskDoom",
              body: "\(appName) left \(ByteFormatting.format(bytes)) of new caches.",
              category: Self.categoryMonitor)
     }

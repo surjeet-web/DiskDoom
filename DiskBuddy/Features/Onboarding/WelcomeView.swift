@@ -9,15 +9,13 @@ struct WelcomeView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
             Spacer()
-            Image(systemName: "circle.grid.3x3.fill")
-                .font(.system(size: 96))
-                .foregroundStyle(.tint)
+            DiskDoomLogo(style: .full, size: 120)
                 .opacity(appeared ? 1 : 0)
-            Text("Welcome to DiskBuddy")
+            Text("Welcome to DiskDoom")
                 .font(.largeTitle.weight(.semibold))
                 .offset(y: appeared ? 0 : 12)
                 .opacity(appeared ? 1 : 0)
-            Text("Find out where your disk space went — and take it back. DiskBuddy scans your Mac's entire filesystem and shows you exactly what's using space, in 8 interactive views.")
+            Text("Your Mac's storage is a mess. DiskDoom finds out exactly what's eating your disk — and gives you the tools to reclaim it.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

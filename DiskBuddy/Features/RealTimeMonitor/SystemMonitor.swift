@@ -65,14 +65,25 @@ final class SystemMonitor: ObservableObject, @unchecked Sendable {
     // MARK: CPU (host_processor_info, all cores averaged)
 
     private func sampleCPU() {
-        var count: mach_msg_type_number_t = 0
+        // mach_host.h: (host, flavor, out_processor_count, out_processor_info,
+        // out_processor_infoCnt). All three outs are required — a nil count
+        // pointer faults inside the kernel call (that was the Monitor crash).
+        // The info buffer is kernel-allocated and must be vm_deallocated.
+        var cpuCount: natural_t = 0
         var info: processor_info_array_t?
-        let result = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &count, &info, nil)
-        guard result == KERN_SUCCESS, let info else { return }
-        defer { vm_deallocate(mach_task_self_, vm_address_t(bitPattern: info), vm_size_t(count) * vm_size_t(MemoryLayout<integer_t>.size)) }
-        let cpuCount = Int(count) / Int(CPU_STATE_MAX)
+        var infoCount: mach_msg_type_number_t = 0
+        guard host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpuCount, &info, &infoCount) == KERN_SUCCESS,
+              let info, cpuCount > 0, cpuCount <= 1024
+        else { return }
+        defer {
+            vm_deallocate(
+                mach_task_self_,
+                vm_address_t(bitPattern: info),
+                vm_size_t(infoCount) * vm_size_t(MemoryLayout<integer_t>.size))
+        }
+        let nCPU = Int(cpuCount)
         var user: UInt32 = 0, system: UInt32 = 0, idle: UInt32 = 0, nice: UInt32 = 0
-        for i in 0..<cpuCount {
+        for i in 0..<nCPU {
             let base = i * Int(CPU_STATE_MAX)
             user += UInt32(info[base + Int(CPU_STATE_USER)])
             system += UInt32(info[base + Int(CPU_STATE_SYSTEM)])
@@ -132,10 +143,13 @@ final class SystemMonitor: ObservableObject, @unchecked Sendable {
                 cpu = Double(totalTicks &- prev) / 100_000_000.0 / dt * 100.0
             }
             prevProcCPU[pid] = totalTicks
+            // icon(forFile:) never traps (unlike NSRunningApplication.icon
+            // IUO); fall back to a guaranteed-present path for icon-less PIDs.
+            let iconPath = app.bundleURL?.path ?? app.executableURL?.path ?? "/bin/ls"
             updated.append(LiveProcess(
                 pid: pid,
                 name: app.localizedName ?? "Unknown",
-                icon: app.icon,
+                icon: NSWorkspace.shared.icon(forFile: iconPath),
                 launchDate: app.launchDate,
                 residentBytes: resident,
                 cpuPercent: max(0, cpu)))

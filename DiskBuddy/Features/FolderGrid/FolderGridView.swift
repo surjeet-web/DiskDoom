@@ -74,7 +74,11 @@ struct FolderGridView: View {
                         .buttonStyle(.plain)
                         .help(node.tooltip)
                         .onTapGesture(count: 2) {
-                            if !node.children.isEmpty { drillPath.append(node) }
+                            if !node.children.isEmpty {
+                                drillPath.append(node)
+                            } else if node.isCollapsed {
+                                state.expandNode(path: node.path)
+                            }
                         }
                         .contextMenu {
                             Button("Reveal in Finder") { }

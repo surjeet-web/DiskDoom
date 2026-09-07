@@ -85,17 +85,6 @@ struct MainWindowView: View {
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
-            if state.sidebarTab == .explore && state.scanPhase == .done {
-                ToolbarItem(placement: .principal) {
-                    Picker("View", selection: $state.exploreView) {
-                        ForEach(AppState.ExploreView.allCases, id: \.self) { view in
-                            Label(view.title, systemImage: view.symbol).tag(view)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(minWidth: 420)
-                }
-            }
             ToolbarItem(placement: .secondaryAction) {
                 TextField("Search", text: $state.searchText)
                     .textFieldStyle(.roundedBorder)
@@ -156,6 +145,10 @@ struct MainWindowView: View {
 
     private var sidebar: some View {
         List(selection: $state.sidebarTab) {
+            Section {
+                DiskDoomLogo(style: .sidebar, size: 28)
+                    .padding(.vertical, DesignTokens.Space.xs)
+            }
             Section("Navigate") {
                 ForEach(AppState.SidebarTab.primary, id: \.self) { tab in
                     let shortcut = ["explore": 1, "duplicates": 2, "applications": 3, "monitor": 4, "snapshots": 5][tab.rawValue] ?? 0
@@ -256,15 +249,45 @@ struct MainWindowView: View {
         } else {
             switch state.sidebarTab {
             case .explore:
-                switch state.exploreView {
-                case .treemap: TreemapView()
-                case .sunburst: SunburstView()
-                case .flame: FlameView()
-                case .bubbles: BubblesView()
-                case .mindMap: MindMapView()
-                case .topSizes: TopSizesView()
-                case .ageMap: AgeMapView()
-                case .folderGrid: FolderGridView()
+                VStack(spacing: 0) {
+                    // 12-view switcher lives here (not the toolbar — a 12-segment
+                    // control doesn't fit window chrome at 1100pt).
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: DesignTokens.Space.xs) {
+                            ForEach(AppState.ExploreView.allCases, id: \.self) { view in
+                                Button {
+                                    state.exploreView = view
+                                } label: {
+                                    Label(view.title, systemImage: view.symbol)
+                                        .font(.caption)
+                                        .padding(.horizontal, DesignTokens.Space.s)
+                                        .padding(.vertical, DesignTokens.Space.xs)
+                                        .background(state.exploreView == view ? Color.accentColor : Color.secondary.opacity(0.08))
+                                        .foregroundStyle(state.exploreView == view ? .white : .primary)
+                                        .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
+                                }
+                                .buttonStyle(.plain)
+                                .help("\(view.title) view")
+                            }
+                        }
+                        .padding(.horizontal, DesignTokens.Space.m)
+                        .padding(.vertical, DesignTokens.Space.xs)
+                    }
+                    Divider()
+                    switch state.exploreView {
+                    case .treemap: TreemapView()
+                    case .sunburst: SunburstView()
+                    case .flame: FlameView()
+                    case .bubbles: BubblesView()
+                    case .mindMap: MindMapView()
+                    case .topSizes: TopSizesView()
+                    case .ageMap: AgeMapView()
+                    case .folderGrid: FolderGridView()
+                    case .radial: RadialView()
+                    case .icicle: IcicleView()
+                    case .treelist: TreelistView()
+                    case .extCloud: ExtCloudView()
+                    }
                 }
             case .duplicates: DuplicatesView()
             case .applications: ApplicationsView()
@@ -377,6 +400,11 @@ private struct InspectorView: View {
                         }
                     }
                     specRow("Total Size", value: node.sizeString)
+                    if node.isCollapsed, let reason = node.collapseReason {
+                        Text("▸ Collapsed: \(reason) — double-click to expand")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     if let physical = node.physicalBytes {
                         specRow("On Disk", value: physical.fileSizeString)
                         let saved = node.sizeBytes - physical

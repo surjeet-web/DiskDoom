@@ -76,6 +76,7 @@ final class AppState: ObservableObject {
 
     enum ExploreView: String, CaseIterable {
         case treemap, sunburst, flame, bubbles, mindMap, topSizes, ageMap, folderGrid
+        case radial, icicle, treelist, extCloud
         var title: String {
             switch self {
             case .treemap: return "Treemap"
@@ -86,6 +87,10 @@ final class AppState: ObservableObject {
             case .topSizes: return "Sizes"
             case .ageMap: return "Age"
             case .folderGrid: return "Grid"
+            case .radial: return "Radial"
+            case .icicle: return "Icicle"
+            case .treelist: return "Treelist"
+            case .extCloud: return "ExtCloud"
             }
         }
 
@@ -99,6 +104,10 @@ final class AppState: ObservableObject {
             case .topSizes: return "list.number"
             case .ageMap: return "calendar"
             case .folderGrid: return "square.grid.2x2.fill"
+            case .radial: return "circle.circle.fill"
+            case .icicle: return "chart.bar.fill"
+            case .treelist: return "list.bullet.indent"
+            case .extCloud: return "cloud.fill"
             }
         }
     }
@@ -112,7 +121,7 @@ final class AppState: ObservableObject {
         static func == (l: Banner, r: Banner) -> Bool { l.id == r.id }
     }
 
-    // Services (injected by DiskBuddyApp).
+    // Services (injected by DiskDoomApp).
     var permissions = PermissionsService()
     var notifications = NotificationService()
     var license = LicenseStore()
@@ -347,6 +356,48 @@ final class AppState: ObservableObject {
 
     func retryScan() {
         startRealScan()
+    }
+
+    /// On-demand expansion of a collapsed smart leaf: measures just that
+    /// subtree and splices the children into the live tree + record index.
+    func expandNode(path: String) {
+        guard let root = scanRoot else { return }
+        let options = ScanOptions(
+            includeHidden: includeHidden,
+            followSymlinks: followSymlinks,
+            maxDepth: 0,
+            excludedPaths: excludedPaths.map { ($0 as NSString).expandingTildeInPath })
+        let result = scanner.expandSubtree(path: path, options: options)
+        guard !result.children.isEmpty else { return }
+        scanRoot = replaceNode(in: root, matching: path, with: result.children)
+        let room = max(0, 1_000_000 - records.count)
+        records += result.records.prefix(room)
+        selectedNode = findNode(in: scanRoot, path: path)
+    }
+
+    private func replaceNode(in node: ScanNode, matching path: String, with children: [ScanNode]) -> ScanNode {
+        if node.path == path {
+            return ScanNode(
+                id: node.id, name: node.name, path: node.path, sizeBytes: node.sizeBytes,
+                category: node.category, fileCount: node.fileCount, children: children,
+                modified: node.modified, physicalBytes: node.physicalBytes,
+                isCollapsed: false, collapseReason: nil)
+        }
+        return ScanNode(
+            id: node.id, name: node.name, path: node.path, sizeBytes: node.sizeBytes,
+            category: node.category, fileCount: node.fileCount,
+            children: node.children.map { replaceNode(in: $0, matching: path, with: children) },
+            modified: node.modified, physicalBytes: node.physicalBytes,
+            isCollapsed: node.isCollapsed, collapseReason: node.collapseReason)
+    }
+
+    private func findNode(in node: ScanNode?, path: String) -> ScanNode? {
+        guard let node else { return nil }
+        if node.path == path { return node }
+        for child in node.children {
+            if let found = findNode(in: child, path: path) { return found }
+        }
+        return nil
     }
 
     // MARK: Cleanup queue (real Trash)
