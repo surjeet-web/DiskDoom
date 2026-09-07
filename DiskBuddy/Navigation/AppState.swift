@@ -1,6 +1,8 @@
 import SwiftUI
+import Combine
+import AppKit
 
-// MARK: - Prototype app state (mock scan engine + navigation for all 37 spec sections)
+// MARK: - App state: real scan lifecycle, trash, snapshots, notifications, trial
 
 @MainActor
 final class AppState: ObservableObject {
@@ -9,6 +11,7 @@ final class AppState: ObservableObject {
         case explore, duplicates, applications, monitor, snapshots
         case litterScore, forecast, simulator, devCaches, health, budgets, liveFeed
         case lifecycle, provenance, compression, containers, privacy, photos
+        case smartClean
         var title: String {
             switch self {
             case .explore: return "Explore"
@@ -29,6 +32,7 @@ final class AppState: ObservableObject {
             case .containers: return "Containers"
             case .privacy: return "Privacy"
             case .photos: return "Photos"
+            case .smartClean: return "Smart Clean"
             }
         }
 
@@ -52,17 +56,16 @@ final class AppState: ObservableObject {
             case .containers: return "square.grid.3x3.fill.square"
             case .privacy: return "lock.shield.fill"
             case .photos: return "photo.on.rectangle.angled"
+            case .smartClean: return "sparkles"
             }
         }
 
-        /// Tabs shown in the main Navigate section (spec §37: ⌘1–⌘5).
         static var primary: [SidebarTab] {
             [.explore, .duplicates, .applications, .monitor, .snapshots]
         }
 
-        /// Differentiation tabs (D1–D13), no global shortcuts to avoid clashes.
         static var insights: [SidebarTab] {
-            [.litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed,
+            [.smartClean, .litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed,
              .lifecycle, .provenance, .compression, .containers, .privacy, .photos]
         }
     }
@@ -105,11 +108,19 @@ final class AppState: ObservableObject {
         static func == (l: Banner, r: Banner) -> Bool { l.id == r.id }
     }
 
+    // Services (injected by DiskBuddyApp).
+    var permissions = PermissionsService()
+    var notifications = NotificationService()
+    var license = LicenseStore()
+    let scanner = RealScanEngine()
+    let dupFinder = DuplicateFinder()
+
     @Published var onboardingStep: OnboardingStep? = .welcome
     @Published var scanPhase: ScanPhase = .idle
     @Published var scanProgress: Double = 0
     @Published var scanPath: String = ""
     @Published var scanFiles: Int = 0
+    @Published var scanElapsed: Double = 0
     @Published var scanTargetName = "Full Mac"
     @Published var limitedMode = false
     @Published var sidebarTab: SidebarTab = .explore
@@ -119,80 +130,176 @@ final class AppState: ObservableObject {
     @Published var searchText = ""
     @Published var banner: Banner? = nil
 
-    // Sheets / panels
     @Published var showCleanup = false
     @Published var showDeleteConfirm = false
     @Published var uninstallApp: AppEntry? = nil
     @Published var quickLookNode: ScanNode? = nil
     @Published var showLicense = false
-    @Published var licenseActive = false
 
-    // Data
     @Published var cleanupItems: [CleanupItem] = []
     @Published var duplicateKeeps: [UUID: UUID] = [:]
-    @Published var snapshots: [Snapshot] = MockSnapshots.initial
+    @Published var snapshots: [Snapshot] = []
     @Published var compareIDs: [UUID] = []
-    @Published var failedCleanupIDs: Set<UUID> = []
-    @Published var cleanupRequiresRetry = false
+    @Published var trashFailures: [TrashFailure] = []
     @Published var freedBytes: Int64 = 0
+    @Published var freedCount: Int = 0
+
+    // Real scan data (nil until first real scan; views fall back to mock).
+    @Published var scanRoot: ScanNode? = nil
+    @Published var records: [ScannedRecord] = []
+    @Published var skippedPaths: [String] = []
+    @Published var lastScanDate: Date? = nil
+
+    // Settings (persisted).
+    @Published var includeHidden = true
+    @Published var followSymlinks = false
+    @Published var maxDepth = 0
+    @Published var excludedPaths: [String] = []
+    @Published var dupMinBytes: Int64 = 10_000_000
+    @Published var snapshotRetention = 30
+    @Published var notifyOnScan = true
+    @Published var monitorThresholdBytes: Int64 = 100_000_000
+    @Published var scheduleFrequency = "never" // never/daily/weekly/monthly
+    @Published var accentName = "system"
+
+    private var scanTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
+    private var scanRootURL: URL = URL(fileURLWithPath: "/")
+
+    init() {
+        loadSettings()
+        snapshots = ScanStore.loadSnapshots(retention: snapshotRetention)
+        if let raw = UserDefaults.standard.string(forKey: "sidebarTab"),
+           let tab = SidebarTab(rawValue: raw) { sidebarTab = tab }
+        if let raw = UserDefaults.standard.string(forKey: "exploreView"),
+           let view = ExploreView(rawValue: raw) { exploreView = view }
+        inspectorVisible = UserDefaults.standard.object(forKey: "inspectorVisible") as? Bool ?? true
+        scanner.$progress.receive(on: DispatchQueue.main).assign(to: &$scanProgress)
+        scanner.$currentPath.receive(on: DispatchQueue.main).assign(to: &$scanPath)
+        scanner.$filesFound.receive(on: DispatchQueue.main).assign(to: &$scanFiles)
+    }
+
+    // MARK: Derived data (real when available, mock fallback)
+
+    var effectiveRoot: ScanNode { scanRoot ?? MockScanData.root }
+    var effectiveTopLevel: [ScanNode] { effectiveRoot.children.isEmpty ? MockScanData.topLevel : effectiveRoot.children }
 
     var cleanupTotal: Int64 { cleanupItems.reduce(0) { $0 + $1.bytes } }
 
+    var ageBuckets: [AgeBucket] {
+        guard !records.isEmpty else { return MockAge.buckets }
+        let now = Date()
+        let day: TimeInterval = 86_400
+        var totals = Array(repeating: Int64(0), count: 9)
+        var counts = Array(repeating: 0, count: 9)
+        for record in records where !record.isDirectory {
+            let age = now.timeIntervalSince(record.modified)
+            let bucket: Int
+            switch age {
+            case ..<day: bucket = 0
+            case ..<(7 * day): bucket = 1
+            case ..<(30 * day): bucket = 2
+            case ..<(90 * day): bucket = 3
+            case ..<(180 * day): bucket = 4
+            case ..<(365 * day): bucket = 5
+            case ..<(730 * day): bucket = 6
+            default: bucket = age < 0 ? 0 : 7
+            }
+            totals[bucket] += record.bytes
+            counts[bucket] += 1
+        }
+        let labels = ["Now (< 1 day)", "1 day – 1 week", "1 week – 1 month", "1 – 3 months",
+                      "3 – 6 months", "6 – 12 months", "1 – 2 years", "2+ years", "Never modified"]
+        let colors: [Color] = [.green, .green, .yellow, .yellow, .orange, .orange, .red, .red, .gray]
+        return (0..<9).map { i in AgeBucket(label: labels[i], bytes: totals[i], files: counts[i], color: colors[i]) }
+    }
+
+    // MARK: Real scan lifecycle
+
     func finishOnboarding() { onboardingStep = nil }
-
-    // MARK: Mock scan (§04)
-
-    private var timer: Timer?
 
     func startScan(target: String? = nil) {
         if let target { scanTargetName = target }
+        scanRootURL = urlForTarget(scanTargetName)
+        startRealScan()
+    }
+
+    func startRealScan(root: URL? = nil, label: String? = nil) {
+        if let root { scanRootURL = root }
+        if let label { scanTargetName = label }
+        scanTask?.cancel()
         scanPhase = .scanning
         scanProgress = 0
         scanFiles = 0
-        scanTickCount = 0
-        timer?.invalidate()
-        // Timer fires on the main runloop; hop into a @MainActor task so no
-        // non-Sendable state crosses into the @Sendable timer closure.
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            Task { @MainActor [weak self] in self?.scanTick() }
-        }
-    }
-
-    private var scanTickCount = 0
-
-    private func scanTick() {
-        scanTickCount += 1
-        scanProgress = min(1, scanProgress + 0.02)
-        scanFiles = Int(Double(MockScanData.totalFiles) * scanProgress)
-        scanPath = "Scanning \(scanPaths[scanTickCount % scanPaths.count])"
-        if scanProgress >= 1 {
-            timer?.invalidate()
-            // Prototype rule to demo §31B: external targets fail.
-            if scanTargetName.hasPrefix("/Volumes") {
-                scanPhase = .failed
-            } else {
-                scanPhase = .done
-                selectedNode = MockScanData.topLevel.first
-                banner = Banner(message: "Scan complete · 1,892,341 files · 256 GB · 9.2s", actionTitle: "View Results")
+        skippedPaths = []
+        let startedAt = Date()
+        let options = ScanOptions(
+            includeHidden: includeHidden,
+            followSymlinks: followSymlinks,
+            maxDepth: maxDepth,
+            excludedPaths: excludedPaths.map { ($0 as NSString).expandingTildeInPath })
+        scanTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await scanner.scan(root: scanRootURL, label: scanTargetName, options: options)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self.scanElapsed = Date().timeIntervalSince(startedAt)
+                self.applyResult(result)
             }
         }
     }
 
-    private let scanPaths = [
-        "/System/Library/Extensions",
-        "/Applications/Google Chrome.app",
-        "/Users/you/Library/Caches",
-        "/Users/you/Library/Application Support",
-        "/Library/Logs",
-        "/Users/you/Downloads",
-    ]
-
-    func cancelScan() {
-        timer?.invalidate()
-        scanPhase = scanProgress > 0.3 ? .done : .idle
+    private func urlForTarget(_ target: String) -> URL {
+        if target.hasPrefix("/Volumes/") || target.hasPrefix("/") {
+            return URL(fileURLWithPath: target)
+        }
+        switch target {
+        case "Home Folder": return FileManager.default.homeDirectoryForCurrentUser
+        default: return URL(fileURLWithPath: "/")
+        }
     }
 
-    // MARK: Cleanup queue (§22/§23/§31C/§34B)
+    private func applyResult(_ result: ScanResult) {
+        scanRoot = result.root
+        records = result.records
+        skippedPaths = result.skipped
+        lastScanDate = Date()
+        UserDefaults.standard.set(lastScanDate, forKey: "lastScanDate")
+        if result.root.fileCount == 0 {
+            // Total failure (e.g. unreadable external volume) — nothing to show.
+            scanPhase = .failed
+        } else {
+            scanPhase = .done
+            selectedNode = result.root.children.first
+            if result.isPartial {
+                banner = Banner(
+                    message: "Partial scan · \(result.skipped.count) folders unreadable · \(result.root.fileCount.formatted()) files mapped",
+                    actionTitle: "Details")
+            } else {
+                banner = Banner(
+                    message: "Scan complete · \(result.root.fileCount.formatted()) files · \(result.root.sizeString) · \(String(format: "%.1f", result.elapsed))s",
+                    actionTitle: "View Results")
+            }
+            dismissBannerAfterDelay()
+            if notifyOnScan {
+                notifications.postScanComplete(files: result.root.fileCount, bytes: result.root.sizeBytes, seconds: result.elapsed)
+            }
+            saveSnapshotFromCurrentScan(label: "Scan")
+        }
+    }
+
+    func cancelScan() {
+        scanTask?.cancel()
+        scanTask = nil
+        // Keep previous results if any; otherwise idle.
+        scanPhase = scanRoot == nil ? .idle : .done
+    }
+
+    func retryScan() {
+        startRealScan()
+    }
+
+    // MARK: Cleanup queue (real Trash)
 
     func stage(source: String, path: String, bytes: Int64) {
         guard !cleanupItems.contains(where: { $0.path == path }) else { return }
@@ -200,26 +307,110 @@ final class AppState: ObservableObject {
     }
 
     func executeCleanup() {
-        // First execution demos §31C partial failure; retry succeeds.
-        if cleanupRequiresRetry == false && cleanupItems.count >= 3 {
-            failedCleanupIDs = Set(cleanupItems.prefix(3).map(\.id))
-            cleanupRequiresRetry = true
+        guard license.canClean else {
+            banner = Banner(message: "Read-only mode — trial expired. Activate a license to clean.", actionTitle: "Activate")
+            showDeleteConfirm = false
             return
         }
-        let okItems = cleanupItems.filter { !failedCleanupIDs.contains($0.id) }
-        freedBytes += okItems.reduce(0) { $0 + $1.bytes }
-        cleanupItems.removeAll()
-        failedCleanupIDs.removeAll()
-        cleanupRequiresRetry = false
+        let result = TrashService.trash(paths: cleanupItems.map { ($0.path, $0.bytes) })
+        trashFailures = result.failures.map {
+            TrashFailure(path: $0.path, bytes: $0.bytes, reason: $0.reason)
+        }
+        let failedPaths = Set(result.failures.map(\.path))
+        cleanupItems.removeAll { failedPaths.contains($0.path) }
+        freedBytes += result.trashedBytes
+        freedCount += result.trashedCount
         showDeleteConfirm = false
-        showCleanup = false
-        banner = Banner(message: "Moved items to Trash · \(freedBytes.fileSizeString) freed", actionTitle: "Show Trash")
+        if result.failures.isEmpty {
+            showCleanup = false
+            banner = Banner(message: "Moved \(result.trashedCount) items to Trash · \(ByteFormatting.format(result.trashedBytes)) freed", actionTitle: "Show Trash")
+            dismissBannerAfterDelay()
+            notifications.postCleanupComplete(items: result.trashedCount, freed: result.trashedBytes)
+        }
+        // Else: queue sheet stays open showing the §31C failure report + retry.
+    }
+
+    func showTrashInFinder() {
+        let trash = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash", isDirectory: true)
+        NSWorkspace.shared.open(trash)
+        banner = nil
     }
 
     func dismissBannerAfterDelay() {
-        Task { @MainActor in
+        Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 8_000_000_000)
-            banner = nil
+            self?.banner = nil
+        }
+    }
+
+    // MARK: Snapshots (real persistence)
+
+    func saveSnapshotFromCurrentScan(label: String) {
+        guard let root = scanRoot else { return }
+        var top: [String: Int64] = [:]
+        for child in root.children { top[child.name] = child.sizeBytes }
+        ScanStore.saveSnapshot(date: Date(), label: label, target: scanTargetName, totalBytes: root.sizeBytes, files: root.fileCount, topDirs: top)
+        snapshots = ScanStore.loadSnapshots(retention: snapshotRetention)
+    }
+
+    func deleteSnapshot(_ snapshot: Snapshot) {
+        snapshots.removeAll { $0.id == snapshot.id }
+    }
+
+    // MARK: Settings persistence
+
+    func saveSettings() {
+        let defaults = UserDefaults.standard
+        defaults.set(includeHidden, forKey: "setIncludeHidden")
+        defaults.set(followSymlinks, forKey: "setFollowSymlinks")
+        defaults.set(maxDepth, forKey: "setMaxDepth")
+        defaults.set(excludedPaths, forKey: "setExcludedPaths")
+        defaults.set(dupMinBytes, forKey: "setDupMinBytes")
+        defaults.set(snapshotRetention, forKey: "setSnapshotRetention")
+        defaults.set(notifyOnScan, forKey: "setNotifyOnScan")
+        defaults.set(monitorThresholdBytes, forKey: "setMonitorThreshold")
+        defaults.set(scheduleFrequency, forKey: "setScheduleFrequency")
+        defaults.set(accentName, forKey: "setAccentName")
+        defaults.set(sidebarTab.rawValue, forKey: "sidebarTab")
+        defaults.set(exploreView.rawValue, forKey: "exploreView")
+        defaults.set(inspectorVisible, forKey: "inspectorVisible")
+        snapshots = ScanStore.loadSnapshots(retention: snapshotRetention)
+    }
+
+    private func loadSettings() {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "setIncludeHidden") != nil {
+            includeHidden = defaults.bool(forKey: "setIncludeHidden")
+            followSymlinks = defaults.bool(forKey: "setFollowSymlinks")
+            maxDepth = defaults.integer(forKey: "setMaxDepth")
+            excludedPaths = defaults.stringArray(forKey: "setExcludedPaths") ?? []
+            dupMinBytes = Int64(defaults.integer(forKey: "setDupMinBytes") == 0 ? 10_000_000 : defaults.integer(forKey: "setDupMinBytes"))
+            snapshotRetention = defaults.integer(forKey: "setSnapshotRetention") == 0 ? 30 : defaults.integer(forKey: "setSnapshotRetention")
+            notifyOnScan = defaults.bool(forKey: "setNotifyOnScan")
+            if defaults.object(forKey: "setMonitorThreshold") != nil {
+                monitorThresholdBytes = Int64(defaults.integer(forKey: "setMonitorThreshold"))
+            }
+            scheduleFrequency = defaults.string(forKey: "setScheduleFrequency") ?? "never"
+            accentName = defaults.string(forKey: "setAccentName") ?? "system"
+        }
+    }
+
+    // MARK: Scheduled scans (config persisted; fires on launch when due)
+
+    func startupCheck() {
+        license.refresh()
+        guard scheduleFrequency != "never" else { return }
+        let last = UserDefaults.standard.object(forKey: "lastAutoScan") as? Date ?? .distantPast
+        let interval: TimeInterval
+        switch scheduleFrequency {
+        case "daily": interval = 86_400
+        case "weekly": interval = 7 * 86_400
+        default: interval = 30 * 86_400
+        }
+        if Date().timeIntervalSince(last) >= interval {
+            UserDefaults.standard.set(Date(), forKey: "lastAutoScan")
+            startRealScan()
         }
     }
 }

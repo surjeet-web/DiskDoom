@@ -46,13 +46,28 @@ enum NodeCategory: String, CaseIterable, Hashable {
 }
 
 struct ScanNode: Identifiable, Hashable {
-    let id = UUID()
+    let id: UUID
     let name: String
     let path: String
     let sizeBytes: Int64
     let category: NodeCategory
     let fileCount: Int
     var children: [ScanNode] = []
+    /// Real scan metadata (nil for mock data).
+    let modified: Date?
+    let physicalBytes: Int64?
+
+    init(id: UUID = UUID(), name: String, path: String, sizeBytes: Int64, category: NodeCategory, fileCount: Int, children: [ScanNode] = [], modified: Date? = nil, physicalBytes: Int64? = nil) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.sizeBytes = sizeBytes
+        self.category = category
+        self.fileCount = fileCount
+        self.children = children
+        self.modified = modified
+        self.physicalBytes = physicalBytes
+    }
 
     var sizeString: String {
         ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)

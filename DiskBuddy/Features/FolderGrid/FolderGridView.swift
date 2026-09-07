@@ -4,9 +4,9 @@ import SwiftUI
 
 struct FolderGridView: View {
     @EnvironmentObject var state: AppState
-    @State private var drillPath: [ScanNode] = [MockScanData.root.children[3]] // ~/Library per spec
+    @State private var drillPath: [ScanNode] = []
 
-    private var current: ScanNode { drillPath.last ?? MockScanData.root }
+    private var current: ScanNode { drillPath.last ?? state.effectiveRoot }
     private var cells: [ScanNode] {
         current.children.isEmpty ? [current] : current.children.sorted { $0.sizeBytes > $1.sizeBytes }
     }
@@ -14,8 +14,10 @@ struct FolderGridView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
             HStack(spacing: DesignTokens.Space.xs) {
-                Button("Macintosh HD") { drillPath = [MockScanData.root] }
-                    .buttonStyle(.link)
+                Button(state.effectiveRoot.name) {
+                    drillPath = [state.effectiveRoot]
+                }
+                .buttonStyle(.link)
                 ForEach(drillPath, id: \.id) { node in
                     Text("▸").foregroundStyle(.tertiary)
                     Button(node.name) {

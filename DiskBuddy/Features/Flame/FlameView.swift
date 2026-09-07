@@ -6,7 +6,7 @@ struct FlameView: View {
     @EnvironmentObject var state: AppState
     @State private var focus: ScanNode? = nil
 
-    private var root: ScanNode { focus ?? MockScanData.root }
+    private var root: ScanNode { focus ?? state.effectiveRoot }
 
     private var layers: [[ScanNode]] {
         var result: [[ScanNode]] = [[root], root.children]

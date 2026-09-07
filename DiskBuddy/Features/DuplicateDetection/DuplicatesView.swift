@@ -1,79 +1,96 @@
 import SwiftUI
 
-// MARK: - §15 Duplicates View (mock hash sets, keep-1 recommendation)
+// MARK: - §15 Duplicates View (real content-hash pipeline over scan records)
 
 struct DuplicatesView: View {
     @EnvironmentObject var state: AppState
-    @State private var minSize: Int64 = 10_000_000
+    @EnvironmentObject var finder: DuplicateFinder
     @State private var onlyReclaimable = false
-
-    private var sets: [DuplicateSet] {
-        MockDuplicates.sets.filter { $0.perCopy >= minSize }
-    }
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.m) {
             HStack {
-                Text("\(sets.count) duplicate sets · \(sets.reduce(0) { $0 + $1.total }.fileSizeString) total")
+                Text("\(finder.sets.count) duplicate sets · \(finder.sets.reduce(0) { $0 + $1.total }.fileSizeString) total")
                     .font(.headline)
                 Spacer()
-                Text("Reclaimable: \(MockDuplicates.totalReclaimable.fileSizeString) (keep 1 copy)")
+                Text("Reclaimable: \(finder.sets.reduce(0) { $0 + $1.reclaimable }.fileSizeString) (keep 1 copy)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             HStack {
-                Picker("Min size", selection: $minSize) {
+                Picker("Min size", selection: $state.dupMinBytes) {
                     Text("1 MB").tag(Int64(1_000_000))
                     Text("10 MB").tag(Int64(10_000_000))
                     Text("100 MB").tag(Int64(100_000_000))
+                    Text("1 GB").tag(Int64(1_000_000_000))
                 }
                 .pickerStyle(.menu)
                 .frame(width: 150)
                 Toggle("Only show reclaimable", isOn: $onlyReclaimable)
                 Spacer()
+                if finder.isRunning {
+                    ProgressView(value: finder.progress).frame(width: 120)
+                } else {
+                    Button("Re-run") { runFinder() }.buttonStyle(.bordered).controlSize(.small)
+                }
             }
             .font(.caption)
-            ScrollView {
-                LazyVStack(spacing: DesignTokens.Space.m) {
-                    ForEach(sets, id: \.id) { set in
-                        DuplicateSetCard(set: set)
-                    }
-                }
-            }
-            HStack {
-                Button("Select All Recommended") {
-                    for set in sets where state.duplicateKeeps[set.id] == nil {
-                        state.duplicateKeeps[set.id] = recommendedKeep(for: set)?.id
-                    }
-                }
-                .buttonStyle(.bordered)
-                Button("Stage All Selected") {
-                    for set in sets {
-                        let keepID = state.duplicateKeeps[set.id] ?? recommendedKeep(for: set)?.id
-                        for file in set.files where file.id != keepID {
-                            state.stage(source: "Duplicates", path: file.path, bytes: file.bytes)
+            if state.records.isEmpty {
+                EmptyState(symbol: "doc.on.doc", title: "Scan first", message: "Duplicate detection hashes your real scan data (size → 8KB sample → full SHA-256).", actionTitle: "Start Scan (⌘R)", action: { state.startScan() })
+            } else if finder.sets.isEmpty && !finder.isRunning {
+                EmptyState(symbol: "checkmark.circle", title: "No Duplicates Found", message: "No byte-identical files above \(ByteFormatting.format(state.dupMinBytes)). Try lowering the minimum size.")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: DesignTokens.Space.m) {
+                        ForEach(finder.sets, id: \.id) { set in
+                            DuplicateSetCard(set: set)
                         }
                     }
-                    state.showCleanup = true
                 }
-                .buttonStyle(.borderedProminent)
-                Spacer()
-                Text("\(MockDuplicates.totalReclaimable.fileSizeString) selected")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Select All Recommended") {
+                        for set in finder.sets where state.duplicateKeeps[set.id] == nil {
+                            state.duplicateKeeps[set.id] = recommendedKeep(for: set)?.id
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    Button("Stage All Selected") {
+                        for set in finder.sets {
+                            let keepID = state.duplicateKeeps[set.id] ?? recommendedKeep(for: set)?.id
+                            for file in set.files where file.id != keepID {
+                                state.stage(source: "Duplicates", path: file.path, bytes: file.bytes)
+                            }
+                        }
+                        state.showCleanup = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Spacer()
+                    Text("\(finder.sets.reduce(0) { $0 + $1.reclaimable }.fileSizeString) selected")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(DesignTokens.Space.m)
+        .task(id: [state.dupMinBytes, Int64(state.records.count)]) {
+            if !state.records.isEmpty { runFinder() }
+        }
+        .onDisappear { finder.cancel() }
+    }
+
+    private func runFinder() {
+        finder.find(in: state.records, minBytes: state.dupMinBytes)
     }
 
     private func recommendedKeep(for set: DuplicateSet) -> DuplicateFile? {
-        // Prefer most canonical location: Desktop > Documents > Downloads > elsewhere.
-        let rank: [String] = ["~/Desktop", "~/Documents", "~/Downloads"]
-        return set.files.sorted {
-            let a = rank.firstIndex(where: $0.path.hasPrefix) ?? 99
-            let b = rank.firstIndex(where: $1.path.hasPrefix) ?? 99
-            return a < b
-        }.first
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        func rank(_ path: String) -> Int {
+            if path.hasPrefix(home + "/Desktop") { return 0 }
+            if path.hasPrefix(home + "/Documents") { return 1 }
+            if path.hasPrefix(home + "/Downloads") { return 2 }
+            return 3
+        }
+        return set.files.sorted { rank($0.path) < rank($1.path) }.first
     }
 }
 
@@ -114,6 +131,7 @@ private struct DuplicateSetCard: View {
                         Text(file.path)
                             .font(.callout.monospaced())
                             .lineLimit(1)
+                            .truncationMode(.middle)
                         Spacer()
                         Text(file.bytes.fileSizeString)
                             .font(.callout.monospacedDigit())
@@ -129,9 +147,6 @@ private struct DuplicateSetCard: View {
                     .help(isKept ? "Kept copy" : "Click to keep this copy instead")
                 }
                 HStack {
-                    Text("Recommendation: Keep \(set.files.first?.path ?? "") — most recently accessed")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     Spacer()
                     Button("Stage \(set.files.count - 1) copies for cleanup") {
                         let keepID = state.duplicateKeeps[set.id] ?? set.files.first?.id
@@ -151,6 +166,8 @@ private struct DuplicateSetCard: View {
 }
 
 #Preview {
-    DuplicatesView().environmentObject(AppState())
+    DuplicatesView()
+        .environmentObject(AppState())
+        .environmentObject(DuplicateFinder())
         .frame(width: 800, height: 600)
 }

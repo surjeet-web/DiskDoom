@@ -5,7 +5,32 @@ import SwiftUI
 struct MainWindowView: View {
     @EnvironmentObject var state: AppState
     @State private var dropTargeted = false
-    @State private var externalVolumes = ["Backup (ext.)"]
+    @State private var realExternalVolumes: [(name: String, path: String, used: String)] = []
+
+    private func refreshVolumes() {
+        let fm = FileManager.default
+        guard let urls = fm.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityForOpportunisticUsageKey, .volumeIsInternalKey], options: [.skipHiddenVolumes]) else { return }
+        var result: [(name: String, path: String, used: String)] = []
+        for url in urls {
+            guard let values = try? url.resourceValues(forKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityForOpportunisticUsageKey, .volumeIsInternalKey]),
+                  values.volumeIsInternal == false,
+                  let total = values.volumeTotalCapacity
+            else { continue }
+            let free = Int64(values.volumeAvailableCapacityForOpportunisticUsage ?? 0)
+            result.append((values.volumeName ?? url.lastPathComponent, url.path,
+                           "\(ByteFormatting.format(Int64(total) - free)) / \(ByteFormatting.format(Int64(total)))"))
+        }
+        realExternalVolumes = result
+    }
+
+    private func volumeSummary(for url: URL) -> String {
+        let name = (try? url.resourceValues(forKeys: [.volumeNameKey]))?.volumeName ?? "Macintosh HD"
+        guard let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForOpportunisticUsageKey]),
+              let total = values.volumeTotalCapacity
+        else { return "\(name) — size unknown" }
+        let free = Int64(values.volumeAvailableCapacityForOpportunisticUsage ?? 0)
+        return "\(name) — \(ByteFormatting.format(Int64(total) - free)) / \(ByteFormatting.format(Int64(total)))"
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -59,7 +84,16 @@ struct MainWindowView: View {
                 }
                 .frame(minWidth: 500)
                 .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-                    state.startScan(target: "Dropped Folder")
+                    // Real folder drop: resolve the first dropped directory and scan it.
+                    guard let provider = providers.first else { return false }
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        guard let url else { return }
+                        var isDir: ObjCBool = false
+                        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return }
+                        DispatchQueue.main.async {
+                            state.startRealScan(root: url, label: url.lastPathComponent)
+                        }
+                    }
                     return true
                 }
                 if state.inspectorVisible {
@@ -112,15 +146,13 @@ struct MainWindowView: View {
             }
             ToolbarItem(placement: .secondaryAction) {
                 Button {
-                    state.snapshots.insert(
-                        Snapshot(date: Date(), label: "Just now", totalBytes: 256_000_000_000, files: 1_892_341, target: state.scanTargetName),
-                        at: 0)
+                    state.saveSnapshotFromCurrentScan(label: "Manual")
                     state.sidebarTab = .snapshots
                 } label: {
                     Label("Snapshot", systemImage: "camera")
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-                .disabled(state.scanPhase != .done)
+                .disabled(state.scanRoot == nil)
             }
         }
         .sheet(isPresented: $state.showCleanup) {
@@ -133,7 +165,11 @@ struct MainWindowView: View {
             QuickLookSheet(node: node).environmentObject(state)
         }
         .sheet(isPresented: $state.showLicense) {
-            LicenseView().environmentObject(state)
+            LicenseView().environmentObject(state.license)
+        }
+        .onAppear {
+            state.startupCheck()
+            refreshVolumes()
         }
     }
 
@@ -170,28 +206,39 @@ struct MainWindowView: View {
                 Label("~/Library", systemImage: "folder").font(.caption)
             }
             Section("Volumes") {
-                Label("Macintosh HD — 256 / 746 GB", systemImage: "internaldrive.fill")
+                Text(volumeSummary(for: URL(fileURLWithPath: "/")))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(externalVolumes, id: \.self) { volume in
+                ForEach(realExternalVolumes, id: \.path) { volume in
                     HStack {
-                        Label("\(volume) — 1.2 / 2.0 TB", systemImage: "externaldrive.fill")
+                        Text("\(volume.name) — \(volume.used)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button {
-                            externalVolumes.removeAll { $0 == volume }
+                            try? NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: volume.path))
+                            refreshVolumes()
                         } label: {
                             Image(systemName: "eject")
                         }
                         .buttonStyle(.plain)
-                        .help("Eject \(volume)")
+                        .help("Eject \(volume.name)")
                     }
                 }
             }
             Section("Scan Summary") {
                 Text("Target: \(state.scanTargetName)").font(.caption)
-                Text("Reclaimable: 142 GB").font(.caption).foregroundStyle(.secondary)
+                if let last = state.lastScanDate {
+                    Text("Last scan: \(last.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                }
+                if let root = state.scanRoot {
+                    Text("\(root.fileCount.formatted()) files · \(root.sizeString)").font(.caption).foregroundStyle(.secondary)
+                    if !state.skippedPaths.isEmpty {
+                        Text("\(state.skippedPaths.count) folders unreadable").font(.caption).foregroundStyle(.orange)
+                    }
+                } else {
+                    Text("No scan yet").font(.caption).foregroundStyle(.tertiary)
+                }
             }
             Section {
                 Button {
@@ -253,14 +300,15 @@ struct MainWindowView: View {
             case .containers: ContainerView()
             case .privacy: PrivacyView()
             case .photos: PhotoLibraryView()
+            case .smartClean: SmartCleanView()
             }
         }
     }
 
     private var statusBar: some View {
         HStack {
-            if state.scanPhase == .done {
-                Text("1,892,341 files scanned · 256 GB mapped in 9.2s")
+            if let root = state.scanRoot {
+                Text("\(root.fileCount.formatted()) files scanned · \(root.sizeString) mapped in \(String(format: "%.1f", state.scanElapsed))s")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             } else {
@@ -291,9 +339,16 @@ private struct NotificationBannerView: View {
             Text(banner.message)
                 .font(.callout)
             Spacer()
-            Button(banner.actionTitle) { state.banner = nil }
-                .buttonStyle(.link)
-                .font(.callout)
+            Button(banner.actionTitle) {
+                switch banner.actionTitle {
+                case "Show Trash": state.showTrashInFinder()
+                case "Activate": state.showLicense = true
+                case "Details": state.sidebarTab = .snapshots
+                default: state.banner = nil
+                }
+            }
+            .buttonStyle(.link)
+            .font(.callout)
             Button {
                 state.banner = nil
             } label: {
@@ -332,7 +387,17 @@ private struct InspectorView: View {
                         }
                     }
                     specRow("Total Size", value: node.sizeString)
+                    if let physical = node.physicalBytes {
+                        specRow("On Disk", value: physical.fileSizeString)
+                        let saved = node.sizeBytes - physical
+                        if saved > 0 {
+                            specRow("APFS Savings", value: saved.fileSizeString)
+                        }
+                    }
                     specRow("Files", value: node.fileCount.formatted())
+                    if let modified = node.modified {
+                        specRow("Modified", value: modified.formatted(date: .abbreviated, time: .omitted))
+                    }
                     specRow("Category", value: node.category.label)
                     if node.category == .applications {
                         // §14 application extras.

@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - §22 Cleanup Queue + §23 Delete Confirmation + §31C partial failure
+// MARK: - §22 Cleanup Queue + §23 Delete Confirmation + §31C real failure report
 
 struct CleanupQueueSheet: View {
     @EnvironmentObject var state: AppState
@@ -12,6 +12,10 @@ struct CleanupQueueSheet: View {
             .map { (source: $0.key, items: $0.value) }
     }
 
+    private var failedIDs: Set<String> {
+        Set(state.trashFailures.map(\.path))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
             Text("Cleanup Queue")
@@ -19,7 +23,12 @@ struct CleanupQueueSheet: View {
             Text("\(state.cleanupItems.count) items staged · \(state.cleanupTotal.fileSizeString) to free")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            if state.cleanupItems.isEmpty {
+            if !state.license.canClean {
+                Label("Read-only mode — trial expired. Activate a license to execute cleanup.", systemImage: "lock.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+            if state.cleanupItems.isEmpty && state.trashFailures.isEmpty {
                 EmptyState(symbol: "trash", title: "Queue is empty", message: "Stage files from any view to clean them up in one batch.")
             } else {
                 ScrollView {
@@ -31,13 +40,14 @@ struct CleanupQueueSheet: View {
                                     .foregroundStyle(.secondary)
                                 ForEach(group.items) { item in
                                     HStack {
-                                        if state.failedCleanupIDs.contains(item.id) {
+                                        if failedIDs.contains(item.path) {
                                             Image(systemName: "exclamationmark.circle.fill")
                                                 .foregroundStyle(.red)
                                         }
                                         Text(item.path)
                                             .font(.callout.monospaced())
                                             .lineLimit(1)
+                                            .truncationMode(.middle)
                                         Spacer()
                                         Text(item.bytes.fileSizeString)
                                             .font(.callout.monospacedDigit())
@@ -56,14 +66,22 @@ struct CleanupQueueSheet: View {
                         }
                     }
                 }
-                // §31C partial failure notice.
-                if state.cleanupRequiresRetry {
+                // §31C real partial-failure report.
+                if !state.trashFailures.isEmpty {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
                         Label("Cleanup Partially Complete", systemImage: "exclamationmark.triangle.fill")
                             .font(.callout.weight(.semibold))
                             .foregroundStyle(.orange)
-                        Text("\(state.failedCleanupIDs.count) items could not be moved (in use / permission denied). They will be skipped on retry.")
+                        ForEach(state.trashFailures, id: \.path) { failure in
+                            HStack {
+                                Text(failure.path).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                Text(failure.reason).font(.caption).foregroundStyle(.red)
+                            }
+                        }
+                        Text("Close the app using the file, fix permissions, then retry.")
                             .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(DesignTokens.Space.m)
                     .background(.orange.opacity(0.08))
@@ -74,17 +92,16 @@ struct CleanupQueueSheet: View {
                 HStack {
                     Button("Clear Queue") {
                         state.cleanupItems.removeAll()
-                        state.failedCleanupIDs.removeAll()
-                        state.cleanupRequiresRetry = false
+                        state.trashFailures.removeAll()
                     }
                     .buttonStyle(.bordered)
                     Spacer()
-                    Button(state.cleanupRequiresRetry ? "Retry Failed Items" : "Move to Trash · \(state.cleanupTotal.fileSizeString)") {
+                    Button("Move to Trash · \(state.cleanupTotal.fileSizeString)") {
                         state.showDeleteConfirm = true
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
-                    .disabled(!confirmed)
+                    .disabled(!confirmed || !state.license.canClean)
                     .keyboardShortcut(.defaultAction)
                 }
             }
@@ -110,7 +127,7 @@ private struct DeleteConfirmSheet: View {
                 .foregroundStyle(.orange)
             Text("Move \(state.cleanupItems.count) items to Trash?")
                 .font(.title3.weight(.semibold))
-            Text("You're about to free \(state.cleanupTotal.fileSizeString). Files will be moved to your Trash. You can restore them from there.")
+            Text("You're about to free \(state.cleanupTotal.fileSizeString). Files will be moved to your Trash via FileManager — never permanently deleted. You can restore them from there.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

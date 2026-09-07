@@ -12,7 +12,7 @@ struct TopSizesView: View {
             all.append(node)
             node.children.forEach(collect)
         }
-        MockScanData.root.children.forEach(collect)
+        state.effectiveRoot.children.forEach(collect)
         let q = state.searchText.lowercased()
         let filtered = q.isEmpty ? all : all.filter { $0.name.lowercased().contains(q) }
         return Array(filtered.sorted { $0.sizeBytes > $1.sizeBytes }.prefix(limit))
@@ -45,7 +45,7 @@ struct TopSizesView: View {
                     Spacer()
                     RoundedRectangle(cornerRadius: 3)
                         .fill(node.category.color.opacity(0.7))
-                        .frame(width: 100 * CGFloat(node.sizeBytes) / CGFloat(MockScanData.totalBytes), height: 8)
+                        .frame(width: 100 * CGFloat(node.sizeBytes) / CGFloat(max(state.effectiveRoot.sizeBytes, 1)), height: 8)
                     Text(node.sizeString)
                         .font(.callout.monospacedDigit())
                         .frame(width: 80, alignment: .trailing)

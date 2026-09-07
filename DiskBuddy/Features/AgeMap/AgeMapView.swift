@@ -6,7 +6,8 @@ struct AgeMapView: View {
     @EnvironmentObject var state: AppState
     @State private var selectedBucket: AgeBucket? = nil
 
-    private var maxBytes: Int64 { MockAge.buckets.map(\.bytes).max() ?? 1 }
+    private var buckets: [AgeBucket] { state.ageBuckets }
+    private var maxBytes: Int64 { buckets.map(\.bytes).max() ?? 1 }
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
@@ -17,7 +18,7 @@ struct AgeMapView: View {
             }
             ScrollView {
                 VStack(spacing: DesignTokens.Space.s) {
-                    ForEach(MockAge.buckets) { bucket in
+                    ForEach(buckets) { bucket in
                         Button {
                             selectedBucket = bucket
                         } label: {

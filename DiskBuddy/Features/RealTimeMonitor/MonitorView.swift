@@ -1,17 +1,15 @@
 import SwiftUI
+import Combine
 
-// MARK: - §18 Monitor Dashboard + §19 Process Table (mock 1s polling)
+// MARK: - §18 Monitor Dashboard + §19 Process Table (REAL system stats)
 
 struct MonitorView: View {
+    @StateObject private var monitor = SystemMonitor()
     @State private var mode: Mode = .dashboard
-    @State private var cpu: Double = 42
-    @State private var memoryGB: Double = 12.4
-    @State private var diskMBps: Double = 24
-    @State private var cpuHistory: [Double] = Array(repeating: 0.4, count: 60)
-    @State private var processes: [ProcEntry] = MockProcesses.all
-    @State private var timer: Timer? = nil
     @State private var filter: ProcFilter = .all
     @State private var query = ""
+    @State private var cpuHistory: [Double] = Array(repeating: 0, count: 60)
+    @State private var selectedPID: Int32? = nil
 
     enum Mode: String, CaseIterable { case dashboard, processes }
     enum ProcFilter: String, CaseIterable { case all, user, system, active }
@@ -32,20 +30,27 @@ struct MonitorView: View {
             }
         }
         .padding(DesignTokens.Space.m)
-        .onAppear { startPolling() }
-        .onDisappear { timer?.invalidate() }
+        .onAppear {
+            monitor.start()
+            cpuHistory = Array(repeating: monitor.cpuPercent / 100, count: 60)
+        }
+        .onDisappear { monitor.stop() }
+        .onReceive(monitor.$cpuPercent) { value in
+            cpuHistory.append(value / 100)
+            if cpuHistory.count > 60 { cpuHistory.removeFirst() }
+        }
     }
 
-    // MARK: §18 Dashboard
+    // MARK: §18 Dashboard (real gauges + real CPU history)
 
     private var dashboard: some View {
         ScrollView {
             VStack(spacing: DesignTokens.Space.l) {
                 HStack(spacing: DesignTokens.Space.xl) {
-                    GaugeView(title: "CPU", value: cpu / 100, label: "\(Int(cpu))%", tint: .blue)
-                    GaugeView(title: "Memory", value: memoryGB / 16, label: "\(String(format: "%.1f", memoryGB))/16 GB", tint: .purple)
-                    GaugeView(title: "Disk I/O", value: min(diskMBps / 100, 1), label: "\(Int(diskMBps)) MB/s", tint: .orange)
-                    GaugeView(title: "Uptime", value: 1, label: "3d 14h", tint: .green)
+                    GaugeView(title: "CPU", value: monitor.cpuPercent / 100, label: "\(Int(monitor.cpuPercent))%", tint: .blue)
+                    GaugeView(title: "Memory", value: monitor.memoryUsedGB / max(monitor.memoryTotalGB, 0.01), label: "\(String(format: "%.1f", monitor.memoryUsedGB))/\(String(format: "%.0f", monitor.memoryTotalGB)) GB", tint: .purple)
+                    GaugeView(title: "Processes", value: min(Double(monitor.processes.count) / 500, 1), label: "\(monitor.processes.count)", tint: .orange)
+                    GaugeView(title: "Uptime", value: 1, label: monitor.uptimeText, tint: .green)
                 }
                 VStack(alignment: .leading) {
                     Text("CPU History (60s)").font(.headline)
@@ -57,24 +62,24 @@ struct MonitorView: View {
         }
     }
 
-    // MARK: §19 Process table
+    // MARK: §19 Real process table (NSWorkspace + proc_pidinfo)
 
-    private var filtered: [ProcEntry] {
-        var list = processes.sorted { $0.cpu > $1.cpu }
+    private var filtered: [LiveProcess] {
+        var list = monitor.processes
         switch filter {
         case .all: break
-        case .user: list = list.filter { !$0.isSystem }
-        case .system: list = list.filter(\.isSystem)
-        case .active: list = list.filter { $0.cpu > 0 }
+        case .user: list = list.filter { !$0.name.lowercased().hasPrefix("com.apple.") }
+        case .system: list = list.filter { $0.pid < 500 }
+        case .active: list = list.filter { $0.cpuPercent > 0.1 }
         }
         if !query.isEmpty { list = list.filter { $0.name.lowercased().contains(query.lowercased()) } }
-        return list
+        return list.sorted { $0.cpuPercent > $1.cpuPercent }
     }
 
     private var processTable: some View {
         VStack(spacing: DesignTokens.Space.s) {
             HStack {
-                Text("\(processes.count) processes").font(.headline)
+                Text("\(monitor.processes.count) processes").font(.headline)
                 Spacer()
                 TextField("Search processes", text: $query)
                     .textFieldStyle(.roundedBorder)
@@ -87,52 +92,54 @@ struct MonitorView: View {
                 .pickerStyle(.menu)
                 .frame(width: 120)
             }
-            List(filtered) { proc in
-                HStack(spacing: DesignTokens.Space.m) {
-                    Text("\(proc.pid)")
-                        .font(.caption.monospacedDigit())
-                        .frame(width: 50, alignment: .trailing)
-                    Text(proc.name)
-                        .frame(width: 180, alignment: .leading)
-                        .lineLimit(1)
-                    Text(String(format: "%.1f%%", proc.cpu))
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(proc.cpu > 10 ? .red : .primary)
-                        .frame(width: 60, alignment: .trailing)
-                    Text(proc.memoryBytes.fileSizeString)
-                        .font(.callout.monospacedDigit())
-                        .frame(width: 80, alignment: .trailing)
-                    Text("\(proc.threads)")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Spacer()
-                    Text(proc.isSystem ? "System" : "Running")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background((proc.isSystem ? Color.purple : Color.green).opacity(0.15))
-                        .foregroundStyle(proc.isSystem ? .purple : .green)
-                        .clipShape(.capsule)
+            HSplitView {
+                List(filtered, id: \.id, selection: $selectedPID) { proc in
+                    HStack(spacing: DesignTokens.Space.m) {
+                        Text("\(proc.pid)")
+                            .font(.caption.monospacedDigit())
+                            .frame(width: 50, alignment: .trailing)
+                        Text(proc.name)
+                            .frame(width: 180, alignment: .leading)
+                            .lineLimit(1)
+                        Text(String(format: "%.1f%%", proc.cpuPercent))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(proc.cpuPercent > 10 ? .red : .primary)
+                            .frame(width: 60, alignment: .trailing)
+                        Text(proc.residentBytes > 0 ? proc.residentBytes.fileSizeString : "—")
+                            .font(.callout.monospacedDigit())
+                            .frame(width: 80, alignment: .trailing)
+                        Spacer()
+                        Text(proc.launchDate.map { $0.formatted(date: .omitted, time: .shortened) } ?? "—")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .tag(proc.pid)
+                }
+                .listStyle(.plain)
+                .frame(minWidth: 400)
+                if let pid = selectedPID, let proc = filtered.first(where: { $0.pid == pid }) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+                        Text(proc.name).font(.headline)
+                        Text("PID \(proc.pid)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Divider()
+                        specRow("CPU", value: String(format: "%.1f%%", proc.cpuPercent))
+                        specRow("Memory (resident)", value: proc.residentBytes > 0 ? proc.residentBytes.fileSizeString : "Restricted (SIP)")
+                        if let launched = proc.launchDate {
+                            specRow("Started", value: launched.formatted(date: .abbreviated, time: .shortened))
+                        }
+                    }
+                    .padding(DesignTokens.Space.m)
+                    .frame(minWidth: 200, idealWidth: 240)
                 }
             }
-            .listStyle(.plain)
         }
     }
 
-    private func startPolling() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            DispatchQueue.main.async {
-                cpu = max(5, min(95, cpu + Double.random(in: -6...6)))
-                memoryGB = max(8, min(15.5, memoryGB + Double.random(in: -0.3...0.3)))
-                diskMBps = max(2, min(120, diskMBps + Double.random(in: -8...8)))
-                cpuHistory.append(cpu / 100)
-                if cpuHistory.count > 60 { cpuHistory.removeFirst() }
-                for i in processes.indices {
-                    processes[i].cpu = max(0, processes[i].cpu + Double.random(in: -0.8...0.8))
-                }
-            }
+    private func specRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.caption.monospacedDigit())
         }
     }
 }

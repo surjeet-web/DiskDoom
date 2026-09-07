@@ -7,7 +7,8 @@ struct TreemapView: View {
     @State private var drillPath: [ScanNode] = []
 
     private var currentNodes: [ScanNode] {
-        drillPath.last?.children.isEmpty == false ? drillPath.last!.children : MockScanData.topLevel
+        if let last = drillPath.last, !last.children.isEmpty { return last.children }
+        return state.effectiveTopLevel
     }
 
     var body: some View {

@@ -4,7 +4,7 @@ import SwiftUI
 
 struct MindMapView: View {
     @EnvironmentObject var state: AppState
-    @State private var path: [ScanNode] = [MockScanData.root]
+    @State private var path: [ScanNode] = []
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
@@ -29,6 +29,9 @@ struct MindMapView: View {
             }
         }
         .padding(DesignTokens.Space.m)
+        .onAppear {
+            if path.isEmpty { path = [state.effectiveRoot] }
+        }
     }
 
     private func mindColumn(node: ScanNode, depth: Int, totalWidth: CGFloat) -> some View {

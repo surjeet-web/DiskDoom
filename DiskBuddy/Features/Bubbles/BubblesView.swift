@@ -7,7 +7,8 @@ struct BubblesView: View {
     @State private var drillPath: [ScanNode] = []
 
     private var nodes: [ScanNode] {
-        drillPath.last?.children.isEmpty == false ? drillPath.last!.children : MockScanData.topLevel
+        if let last = drillPath.last, !last.children.isEmpty { return last.children }
+        return state.effectiveTopLevel
     }
 
     private var maxBytes: Int64 { nodes.map(\.sizeBytes).max() ?? 1 }
@@ -75,7 +76,7 @@ struct BubblesView: View {
                 }
                 .padding()
             }
-            Text("\(MockScanData.topLevel.count) top-level groups · 256 GB total")
+            Text("\(nodes.count) groups · \(state.effectiveRoot.sizeString) total")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

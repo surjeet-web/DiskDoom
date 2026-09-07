@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct DiskBuddyApp: App {
     @StateObject private var state = AppState()
+    @StateObject private var recommendationsEngine = RecommendationsEngine()
     @StateObject private var litterEngine = LitterScoreEngine()
     @StateObject private var forecastEngine = DiskForecastEngine()
     @StateObject private var simulator = WhatIfSimulator()
@@ -34,6 +35,11 @@ struct DiskBuddyApp: App {
                 .environmentObject(containerScanner)
                 .environmentObject(privacyEngine)
                 .environmentObject(photoAnalyzer)
+                .environmentObject(recommendationsEngine)
+                .environmentObject(state.permissions)
+                .environmentObject(state.notifications)
+                .environmentObject(state.license)
+                .environmentObject(state.dupFinder)
         }
         .defaultSize(width: 1100, height: 700)
         .commands {

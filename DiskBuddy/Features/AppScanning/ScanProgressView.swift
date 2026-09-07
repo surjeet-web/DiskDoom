@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - §04 Scanning Progress (prototype: driven by AppState mock timer)
+// MARK: - §04 Scanning Progress (real engine progress, cancellable)
 
 struct ScanProgressView: View {
     @EnvironmentObject var state: AppState
@@ -11,6 +11,8 @@ struct ScanProgressView: View {
             Image(systemName: "circle.dotted")
                 .font(.system(size: 64))
                 .foregroundStyle(.tint)
+            Text("Scanning \(state.scanTargetName)")
+                .font(.headline)
             Text(state.scanPath.isEmpty ? "Preparing scan…" : state.scanPath)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -22,7 +24,7 @@ struct ScanProgressView: View {
             }
             .progressViewStyle(.linear)
             .frame(width: 420)
-            Text("\(state.scanFiles.formatted()) files · \(elapsedText) elapsed")
+            Text("\(state.scanFiles.formatted()) files found")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
             Button("Cancel", action: state.cancelScan)
@@ -32,18 +34,8 @@ struct ScanProgressView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-    private var elapsedText: String {
-        let seconds = Int(state.scanProgress * MockScanData.scanSeconds)
-        return String(format: "%.1fs", Double(seconds))
-    }
 }
 
 #Preview {
-    let state = AppState()
-    state.scanPhase = .scanning
-    state.scanProgress = 0.78
-    state.scanPath = "Scanning /Users/you/Library/Caches"
-    state.scanFiles = 1_423_891
-    return ScanProgressView().environmentObject(state)
+    ScanProgressView().environmentObject(AppState())
 }

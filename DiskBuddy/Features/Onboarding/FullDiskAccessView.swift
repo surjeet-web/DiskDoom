@@ -1,23 +1,10 @@
 import SwiftUI
 
-// MARK: - §02 Onboarding: Full Disk Access Explainer (prototype: simulated status)
+// MARK: - §02 Full Disk Access: real permission probe + polling on reactivation
 
 struct FullDiskAccessView: View {
     @EnvironmentObject var state: AppState
-    @State private var status: FDAStatus = .waiting
-    @State private var pollTask: Task<Void, Never>?
-
-    enum FDAStatus {
-        case waiting, checking, granted
-
-        var text: String {
-            switch self {
-            case .waiting: return "Status: Waiting for permission…"
-            case .checking: return "Status: Checking…"
-            case .granted: return "Status: Granted ✓"
-            }
-        }
-    }
+    @EnvironmentObject var permissions: PermissionsService
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
@@ -42,7 +29,7 @@ struct FullDiskAccessView: View {
             .frame(width: 380, alignment: .leading)
             .specCard()
             Spacer()
-            if status == .granted {
+            if permissions.fdaGranted {
                 Button("Continue") {
                     withAnimation(.easeOut(duration: DesignTokens.Motion.base)) {
                         state.onboardingStep = .scanTarget
@@ -52,25 +39,25 @@ struct FullDiskAccessView: View {
                 .keyboardShortcut(.defaultAction)
             } else {
                 Button("Open System Settings") {
-                    status = .checking
-                    // Prototype: simulate the polling loop (spec: 1.5s poll).
-                    pollTask?.cancel()
-                    pollTask = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 1_500_000_000)
-                        if !Task.isCancelled { status = .granted }
-                    }
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-                        NSWorkspace.shared.open(url)
-                    }
+                    permissions.openPrivacySettings()
                 }
                 .accentCTA()
                 .keyboardShortcut(.defaultAction)
             }
-            Text(status.text)
-                .font(.caption)
-                .foregroundStyle(status == .granted ? .green : .secondary)
+            HStack(spacing: DesignTokens.Space.s) {
+                Circle()
+                    .fill(permissions.fdaGranted ? .green : .orange)
+                    .frame(width: 8, height: 8)
+                Text(permissions.fdaGranted ? "Status: Granted ✓" : "Status: Waiting for permission… (checked when you return)")
+                    .font(.caption)
+                    .foregroundStyle(permissions.fdaGranted ? .green : .secondary)
+                Button("Check Again") { permissions.checkAll() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
             Button("Skip for now →") {
-                state.finishOnboarding() // limited mode: user folders only
+                state.limitedMode = true
+                state.finishOnboarding() // user folders only, no /Library
             }
             .buttonStyle(.link)
             .font(.caption2)
@@ -79,10 +66,17 @@ struct FullDiskAccessView: View {
         }
         .padding(DesignTokens.Space.xl)
         .frame(width: DesignTokens.Layout.onboardingWidth, height: 620)
-        .onDisappear { pollTask?.cancel() }
+        .onAppear {
+            permissions.checkAll()
+            if permissions.fdaGranted {
+                state.onboardingStep = .scanTarget
+            }
+        }
     }
 }
 
 #Preview {
-    FullDiskAccessView().environmentObject(AppState())
+    FullDiskAccessView()
+        .environmentObject(AppState())
+        .environmentObject(PermissionsService())
 }

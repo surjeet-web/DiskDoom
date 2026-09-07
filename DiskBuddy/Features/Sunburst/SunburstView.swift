@@ -9,7 +9,7 @@ struct SunburstView: View {
 
     private var root: ScanNode {
         if let last = drillPath.last { return last }
-        return MockScanData.root
+        return state.effectiveRoot
     }
 
     private var inner: [ScanNode] { root.children.isEmpty ? [root] : root.children }

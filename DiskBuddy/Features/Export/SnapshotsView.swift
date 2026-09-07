@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - §20 Snapshots List + §21 Comparison (mock data)
+// MARK: - §20 Snapshots List + §21 Comparison (real persisted snapshots + CSV export)
 
 struct SnapshotsView: View {
     @EnvironmentObject var state: AppState
@@ -18,26 +18,31 @@ struct SnapshotsView: View {
             HStack {
                 Text("\(state.snapshots.count) snapshots").font(.headline)
                 Spacer()
+                Button("Export CSV") { exportCSV() }
+                    .buttonStyle(.bordered)
+                    .disabled(state.snapshots.isEmpty)
                 Button("Save Current Scan") {
-                    state.snapshots.insert(
-                        Snapshot(date: Date(), label: "Just now", totalBytes: 256_000_000_000, files: 1_892_341, target: state.scanTargetName),
-                        at: 0)
+                    state.saveSnapshotFromCurrentScan(label: "Manual")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(state.scanPhase != .done)
+                .disabled(state.scanRoot == nil)
                 if state.compareIDs.count == 2 {
                     Button("Compare Selected") { comparing = true }
                         .buttonStyle(.bordered)
                 }
             }
-            ScrollView {
-                LazyVStack(spacing: DesignTokens.Space.m) {
-                    ForEach(state.snapshots) { snap in
-                        SnapshotCard(snap: snap, dateText: dateText)
+            if state.snapshots.isEmpty {
+                EmptyState(symbol: "camera", title: "No snapshots yet", message: "Snapshots save automatically after each scan (or save manually). They persist as compressed JSON in Application Support.")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: DesignTokens.Space.m) {
+                        ForEach(state.snapshots) { snap in
+                            SnapshotCard(snap: snap, dateText: dateText)
+                        }
                     }
                 }
             }
-            Text("Storage: \(state.snapshots.count) snapshots · Auto-save: After each scan")
+            Text("Storage: \(state.snapshots.count) snapshots · Auto-save: After each scan · Retention: \(state.snapshotRetention)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -46,6 +51,13 @@ struct SnapshotsView: View {
             SnapshotComparisonView()
                 .environmentObject(state)
         }
+    }
+
+    private func exportCSV() {
+        let rows: [[String]] = [["Date", "Label", "Target", "Total Bytes", "Files"]] + state.snapshots.map {
+            [dateText.string(from: $0.date), $0.label, $0.target, "\($0.totalBytes)", "\($0.files)"]
+        }
+        _ = ExportService.csvURL(rows: rows, suggestedName: "diskbuddy-snapshots.csv")
     }
 }
 
@@ -78,7 +90,7 @@ private struct SnapshotCard: View {
             .toggleStyle(.checkbox)
             .font(.caption)
             Button("Delete") {
-                state.snapshots.removeAll { $0.id == snap.id }
+                state.deleteSnapshot(snap)
             }
             .buttonStyle(.bordered)
             .font(.caption)
@@ -89,7 +101,7 @@ private struct SnapshotCard: View {
     }
 }
 
-// MARK: - §21 Comparison view
+// MARK: - §21 Comparison view (real stored top-dir deltas)
 
 private struct SnapshotComparisonView: View {
     @EnvironmentObject var state: AppState
@@ -97,58 +109,84 @@ private struct SnapshotComparisonView: View {
 
     enum ChangeFilter: String, CaseIterable { case all, grew, shrank }
 
-    private var rows: [MockSnapshots.DeltaRow] {
+    private var selected: [Snapshot] {
+        state.compareIDs.compactMap { id in state.snapshots.first { $0.id == id } }
+            .sorted { $0.date < $1.date }
+    }
+
+    private var rows: [(name: String, old: Int64, new: Int64)] {
+        guard selected.count == 2,
+              let oldTop = ScanStore.topDirs(for: selected[0]),
+              let newTop = ScanStore.topDirs(for: selected[1])
+        else { return [] }
+        let names = Set(oldTop.keys).union(newTop.keys)
+        let all = names.map { name in
+            (name, oldTop[name] ?? 0, newTop[name] ?? 0)
+        }.sorted { ($1.1 - $0.1) > ($1.2 - $0.2) }
         switch filter {
-        case .all: return MockSnapshots.comparison
-        case .grew: return MockSnapshots.comparison.filter { $0.delta > 0 }
-        case .shrank: return MockSnapshots.comparison.filter { $0.delta < 0 }
+        case .all: return all
+        case .grew: return all.filter { $0.2 > $0.1 }
+        case .shrank: return all.filter { $0.2 < $0.1 }
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
-            Text("Compare: Yesterday → Today")
-                .font(.title3.weight(.semibold))
-            HStack(spacing: DesignTokens.Space.xl) {
-                Text("Total: 254 GB → 256 GB (+2.1 GB)")
-                Text("Files: 1,889,102 → 1,892,341 (+3,239)")
-            }
-            .font(.callout.monospacedDigit())
-            Picker("Filter", selection: $filter) {
-                ForEach(ChangeFilter.allCases, id: \.self) { f in
-                    Text(f.rawValue.capitalized).tag(f)
+            if selected.count == 2 {
+                let a = selected[0], b = selected[1]
+                let delta = b.totalBytes - a.totalBytes
+                Text("Compare: \(a.label) → \(b.label)")
+                    .font(.title3.weight(.semibold))
+                Text("Total: \(a.totalBytes.fileSizeString) → \(b.totalBytes.fileSizeString) (\(delta >= 0 ? "+" : "")\(delta.fileSizeString))")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(delta > 0 ? .red : delta < 0 ? .green : .secondary)
+                if rows.isEmpty {
+                    Text("Stored size breakdowns aren't available for these snapshots (saved before this version). New snapshots record per-folder sizes for comparison.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Picker("Filter", selection: $filter) {
+                        ForEach(ChangeFilter.allCases, id: \.self) { f in
+                            Text(f.rawValue.capitalized).tag(f)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 260)
+                    List(rows, id: \.name) { row in
+                        let delta = row.new - row.old
+                        HStack {
+                            Circle()
+                                .fill(delta > 0 ? .red : delta < 0 ? .green : .gray)
+                                .frame(width: 8, height: 8)
+                            Text(row.name)
+                            Spacer()
+                            Text(row.old.fileSizeString).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                            Text("→").foregroundStyle(.tertiary)
+                            Text(row.new.fileSizeString).font(.callout.monospacedDigit())
+                            Text((delta >= 0 ? "+" : "") + delta.fileSizeString)
+                                .font(.callout.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(delta > 0 ? .red : delta < 0 ? .green : .secondary)
+                                .frame(width: 90, alignment: .trailing)
+                        }
+                    }
+                    .listStyle(.plain)
                 }
+            } else {
+                Text("Select two snapshots to compare.")
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .frame(width: 260)
-            List(rows) { row in
-                HStack {
-                    Circle()
-                        .fill(row.delta > 0 ? .red : row.delta < 0 ? .green : .gray)
-                        .frame(width: 8, height: 8)
-                    Text(row.name)
-                    Spacer()
-                    Text(row.oldBytes.fileSizeString)
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    Text("→")
-                        .foregroundStyle(.tertiary)
-                    Text(row.newBytes.fileSizeString)
-                        .font(.callout.monospacedDigit())
-                    Text((row.delta >= 0 ? "+" : "") + row.delta.fileSizeString)
-                        .font(.callout.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(row.delta > 0 ? .red : row.delta < 0 ? .green : .secondary)
-                        .frame(width: 90, alignment: .trailing)
-                }
-            }
-            .listStyle(.plain)
             HStack {
                 Spacer()
-                Button("Export Comparison") { }
-                    .buttonStyle(.bordered)
-                Button("Done") { state.compareIDs.removeAll() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
+                Button("Export CSV") {
+                    let rows = [["Folder", "Old Bytes", "New Bytes", "Delta"]] + rows.map { [$0.name, "\($0.old)", "\($0.new)", "\($0.new - $0.old)"] }
+                    _ = ExportService.csvURL(rows: rows, suggestedName: "diskbuddy-comparison.csv")
+                }
+                .buttonStyle(.bordered)
+                .disabled(rows.isEmpty)
+                Button("Done") {
+                    state.compareIDs.removeAll()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(DesignTokens.Space.xl)
