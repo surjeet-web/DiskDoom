@@ -59,7 +59,8 @@ struct DevCacheItem: Identifiable {
     }
 }
 
-final class DevCacheEngine: ObservableObject {
+// Main-confined in practice (driven from UI/main thread), hence Sendable.
+final class DevCacheEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var items: [DevCacheItem] = []
     @Published private(set) var isScanning = false
 

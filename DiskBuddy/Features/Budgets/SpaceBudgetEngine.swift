@@ -49,7 +49,8 @@ struct BudgetStatus: Identifiable {
     var isOverBudget: Bool { currentBytes > budget.maxBytes }
 }
 
-final class SpaceBudgetEngine: ObservableObject {
+// Main-confined in practice (driven from UI/main thread), hence Sendable.
+final class SpaceBudgetEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var budgets: [SpaceBudget] = []
     @Published private(set) var statuses: [BudgetStatus] = []
 

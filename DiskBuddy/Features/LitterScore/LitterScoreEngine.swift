@@ -33,7 +33,8 @@ struct LitterScoreEntry: Identifiable {
     }
 }
 
-final class LitterScoreEngine: ObservableObject {
+// Main-confined in practice (driven from UI/main thread), hence Sendable.
+final class LitterScoreEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var entries: [LitterScoreEntry] = []
     @Published private(set) var isComputing = false
 

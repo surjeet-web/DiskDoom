@@ -17,6 +17,8 @@ struct DiskBuddyApp: App {
     @StateObject private var containerScanner = ContainerScanner()
     @StateObject private var privacyEngine = PrivacyScannerEngine()
     @StateObject private var photoAnalyzer = PhotoLibraryAnalyzer()
+    @StateObject private var topology = DiskTopologyService()
+    @StateObject private var coordinator = LaunchCoordinator()
 
     var body: some Scene {
         WindowGroup {
@@ -40,6 +42,19 @@ struct DiskBuddyApp: App {
                 .environmentObject(state.notifications)
                 .environmentObject(state.license)
                 .environmentObject(state.dupFinder)
+                .environmentObject(topology)
+                .environmentObject(coordinator)
+                .task {
+                    // Window is already visible here — jobs hydrate progressively.
+                    LaunchJobs.registerAll(
+                        on: coordinator, state: state,
+                        litter: litterEngine, health: healthEngine,
+                        forecast: forecastEngine, lifecycle: lifecycleEngine,
+                        devcaches: devCacheEngine, budgets: budgetEngine,
+                        compression: compressionEngine, privacy: privacyEngine,
+                        topology: topology)
+                    await coordinator.runAll()
+                }
         }
         .defaultSize(width: 1100, height: 700)
         .commands {
@@ -112,6 +127,8 @@ struct DiskBuddyApp: App {
                 Button("Containers") { state.sidebarTab = .containers }
                 Button("Privacy") { state.sidebarTab = .privacy }
                 Button("Photos") { state.sidebarTab = .photos }
+                Button("Smart Clean") { state.sidebarTab = .smartClean }
+                Button("Storage") { state.sidebarTab = .storage }
             }
         }
 

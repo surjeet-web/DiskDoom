@@ -4,33 +4,9 @@ import SwiftUI
 
 struct MainWindowView: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var topology: DiskTopologyService
+    @EnvironmentObject var coordinator: LaunchCoordinator
     @State private var dropTargeted = false
-    @State private var realExternalVolumes: [(name: String, path: String, used: String)] = []
-
-    private func refreshVolumes() {
-        let fm = FileManager.default
-        guard let urls = fm.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityForOpportunisticUsageKey, .volumeIsInternalKey], options: [.skipHiddenVolumes]) else { return }
-        var result: [(name: String, path: String, used: String)] = []
-        for url in urls {
-            guard let values = try? url.resourceValues(forKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityForOpportunisticUsageKey, .volumeIsInternalKey]),
-                  values.volumeIsInternal == false,
-                  let total = values.volumeTotalCapacity
-            else { continue }
-            let free = Int64(values.volumeAvailableCapacityForOpportunisticUsage ?? 0)
-            result.append((values.volumeName ?? url.lastPathComponent, url.path,
-                           "\(ByteFormatting.format(Int64(total) - free)) / \(ByteFormatting.format(Int64(total)))"))
-        }
-        realExternalVolumes = result
-    }
-
-    private func volumeSummary(for url: URL) -> String {
-        let name = (try? url.resourceValues(forKeys: [.volumeNameKey]))?.volumeName ?? "Macintosh HD"
-        guard let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForOpportunisticUsageKey]),
-              let total = values.volumeTotalCapacity
-        else { return "\(name) — size unknown" }
-        let free = Int64(values.volumeAvailableCapacityForOpportunisticUsage ?? 0)
-        return "\(name) — \(ByteFormatting.format(Int64(total) - free)) / \(ByteFormatting.format(Int64(total)))"
-    }
 
     var body: some View {
         NavigationSplitView {
@@ -169,7 +145,10 @@ struct MainWindowView: View {
         }
         .onAppear {
             state.startupCheck()
-            refreshVolumes()
+            Task {
+                await topology.loadCapacity()
+                await topology.loadExternals()
+            }
         }
     }
 
@@ -206,23 +185,24 @@ struct MainWindowView: View {
                 Label("~/Library", systemImage: "folder").font(.caption)
             }
             Section("Volumes") {
-                Text(volumeSummary(for: URL(fileURLWithPath: "/")))
+                Text("\(topology.dataVolumeName) — \(ByteFormatting.format(max(0, topology.dataTotalBytes - topology.dataFreeBytes))) / \(ByteFormatting.format(topology.dataTotalBytes))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(realExternalVolumes, id: \.path) { volume in
+                ForEach(topology.externals) { volume in
                     HStack {
-                        Text("\(volume.name) — \(volume.used)")
+                        Text("\(volume.name) — \(ByteFormatting.format(volume.totalBytes - volume.freeBytes)) / \(ByteFormatting.format(volume.totalBytes))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Button {
-                            try? NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: volume.path))
-                            refreshVolumes()
-                        } label: {
-                            Image(systemName: "eject")
+                        if volume.isEjectable {
+                            Button {
+                                topology.eject(mountPath: volume.mountPath)
+                            } label: {
+                                Image(systemName: "eject")
+                            }
+                            .buttonStyle(.plain)
+                            .help("Eject \(volume.name)")
                         }
-                        .buttonStyle(.plain)
-                        .help("Eject \(volume.name)")
                     }
                 }
             }
@@ -230,6 +210,9 @@ struct MainWindowView: View {
                 Text("Target: \(state.scanTargetName)").font(.caption)
                 if let last = state.lastScanDate {
                     Text("Last scan: \(last.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                }
+                if coordinator.staleCache {
+                    Text("Results may be outdated").font(.caption).foregroundStyle(.orange)
                 }
                 if let root = state.scanRoot {
                     Text("\(root.fileCount.formatted()) files · \(root.sizeString)").font(.caption).foregroundStyle(.secondary)
@@ -301,6 +284,7 @@ struct MainWindowView: View {
             case .privacy: PrivacyView()
             case .photos: PhotoLibraryView()
             case .smartClean: SmartCleanView()
+            case .storage: StorageView()
             }
         }
     }
@@ -315,6 +299,11 @@ struct MainWindowView: View {
                 Text("No scan yet").font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
+            if coordinator.phase != .complete {
+                Text(coordinator.currentJobName.isEmpty ? "Preparing…" : coordinator.currentJobName)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
             if let node = state.selectedNode {
                 Text("Selection: \(node.name)")
                     .font(.caption2)

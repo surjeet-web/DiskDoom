@@ -11,7 +11,7 @@ final class AppState: ObservableObject {
         case explore, duplicates, applications, monitor, snapshots
         case litterScore, forecast, simulator, devCaches, health, budgets, liveFeed
         case lifecycle, provenance, compression, containers, privacy, photos
-        case smartClean
+        case smartClean, storage
         var title: String {
             switch self {
             case .explore: return "Explore"
@@ -33,6 +33,7 @@ final class AppState: ObservableObject {
             case .privacy: return "Privacy"
             case .photos: return "Photos"
             case .smartClean: return "Smart Clean"
+            case .storage: return "Storage"
             }
         }
 
@@ -57,6 +58,7 @@ final class AppState: ObservableObject {
             case .privacy: return "lock.shield.fill"
             case .photos: return "photo.on.rectangle.angled"
             case .smartClean: return "sparkles"
+            case .storage: return "internaldrive.fill"
             }
         }
 
@@ -66,7 +68,7 @@ final class AppState: ObservableObject {
 
         static var insights: [SidebarTab] {
             [.smartClean, .litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed,
-             .lifecycle, .provenance, .compression, .containers, .privacy, .photos]
+             .lifecycle, .provenance, .compression, .containers, .privacy, .photos, .storage]
         }
     }
 

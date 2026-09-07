@@ -29,7 +29,8 @@ struct DiskHealthScore {
     }
 }
 
-final class DiskHealthEngine: ObservableObject {
+// Main-confined in practice (driven from UI/main thread), hence Sendable.
+final class DiskHealthEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var score: DiskHealthScore?
 
     /// Mock computation from prototype scan totals. Production version takes

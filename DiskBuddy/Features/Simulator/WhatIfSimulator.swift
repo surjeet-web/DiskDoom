@@ -10,7 +10,8 @@ struct SimulatedAction: Identifiable {
     let risk: CleanupRisk // single source of truth (see CleanupRisk)
 }
 
-final class WhatIfSimulator: ObservableObject {
+// Main-confined in practice (driven from UI/main thread), hence Sendable.
+final class WhatIfSimulator: ObservableObject, @unchecked Sendable {
     @Published private(set) var staged: [SimulatedAction] = []
 
     var totalBytes: Int64 { staged.reduce(0) { $0 + $1.bytes } }

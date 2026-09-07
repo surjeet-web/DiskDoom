@@ -19,7 +19,8 @@ struct DiskForecast {
     let isFilling: Bool
 }
 
-final class DiskForecastEngine: ObservableObject {
+// Main-confined in practice (driven from UI/main thread), hence Sendable.
+final class DiskForecastEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var forecast: DiskForecast?
 
     func compute() {
