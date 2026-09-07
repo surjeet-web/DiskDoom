@@ -400,6 +400,15 @@ final class AppState: ObservableObject {
 
     func startupCheck() {
         license.refresh()
+        Task { [weak self] in
+            guard let self else { return }
+            await license.validateOnLaunch()
+            if let update = license.updateAvailable {
+                banner = Banner(message: "Update \(update) is available (Check for Updates in Settings).", actionTitle: "Dismiss")
+            } else if let message = license.lastServerMessage, !license.isLicensed {
+                banner = Banner(message: message, actionTitle: "Activate")
+            }
+        }
         guard scheduleFrequency != "never" else { return }
         let last = UserDefaults.standard.object(forKey: "lastAutoScan") as? Date ?? .distantPast
         let interval: TimeInterval

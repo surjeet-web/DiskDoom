@@ -1,12 +1,13 @@
 import SwiftUI
 
-// MARK: - §29 License Activation (real trial countdown + Keychain) + §30 Success
+// MARK: - §29 License Activation (server-backed) + §30 Success
 
 struct LicenseView: View {
     @EnvironmentObject var store: LicenseStore
     @Environment(\.dismiss) private var dismiss
     @State private var key = ""
-    @State private var error: String? = nil
+    @State private var email = ""
+    @State private var showAdvanced = false
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.m) {
@@ -17,38 +18,57 @@ struct LicenseView: View {
                 // §30 success.
                 Text("DiskBuddy is Activated!")
                     .font(.title2.weight(.semibold))
-                Text("Thank you for purchasing DiskBuddy. All features are now unlocked permanently. Your key is stored in the macOS Keychain.")
+                Text("All features are unlocked. License ID and device token are stored in the macOS Keychain — nothing sensitive touches disk or the repo.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 380)
+                if store.serverReachable == false {
+                    Text("Server unreachable — running on offline grace.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 Button("Start Using") { dismiss() }
                     .accentCTA()
                     .keyboardShortcut(.defaultAction)
-                Button("Deactivate") { store.deactivate() }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                Button(store.isWorking ? "Working…" : "Deactivate This Mac") {
+                    Task { await store.deactivateOnline() }
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .disabled(store.isWorking)
             } else {
                 // §29 activation.
                 Text("Activate DiskBuddy")
                     .font(.title2.weight(.semibold))
-                Text("Enter your license key to unlock all features.")
+                Text("Enter your license key and purchase email.")
                     .font(.body)
                     .foregroundStyle(.secondary)
-                TextField("XXXX-XXXX-XXXX-XXXX-XXXX", text: $key)
+                TextField("License key (e.g. DB-XXXXXXXX)", text: $key)
                     .textFieldStyle(.roundedBorder)
                     .font(.body.monospaced())
                     .frame(width: 320)
+                    .autocorrectionDisabled()
+                TextField("Purchase email", text: $email)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                    .frame(width: 320)
+                    .autocorrectionDisabled()
                     .onSubmit { activate() }
-                if let error {
-                    Text(error)
+                if let message = store.lastServerMessage {
+                    Text(message)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(store.serverReachable ? .red : .orange)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 360)
                 }
-                Button("Activate") { activate() }
-                    .accentCTA()
-                    .keyboardShortcut(.defaultAction)
+                Button(store.isWorking ? "Contacting server…" : "Activate") {
+                    activate()
+                }
+                .accentCTA()
+                .keyboardShortcut(.defaultAction)
+                .disabled(store.isWorking)
                 Button("Purchase License") { }
                     .buttonStyle(.bordered)
                 if store.trialDaysLeft > 0 {
@@ -56,27 +76,35 @@ struct LicenseView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("Trial expired — read-only mode until you activate.")
+                    Text("Trial expired — activate or use offline grace for read-only browsing.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
-                if let grace = store.graceDaysLeft {
-                    Text("Offline grace: \(grace) days remaining.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                    TextField("Custom server URL (empty = api.diskbuddy.com)", text: $store.serverOverride)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                        .frame(width: 360)
+                        .autocorrectionDisabled()
+                    Text("For local testing: run `wrangler dev` in the server folder, then enter http://localhost:8787/v1")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
+                .font(.caption)
+                .frame(width: 360)
             }
         }
         .padding(DesignTokens.Space.xl)
-        .frame(width: 480, height: 600)
+        .frame(width: 480, height: 640)
         .onAppear { store.refresh() }
     }
 
     private func activate() {
-        if store.activate(key: key) {
-            error = nil
-        } else {
-            error = "That key looks too short — check for typos and try again."
+        Task {
+            if await store.activateOnline(licenseID: key, email: email) {
+                key = ""
+                email = ""
+            }
         }
     }
 }
