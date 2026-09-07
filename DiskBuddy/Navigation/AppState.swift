@@ -235,11 +235,18 @@ final class AppState: ObservableObject {
         scanFiles = 0
         skippedPaths = []
         let startedAt = Date()
+        // Full-disk scans skip kernel/virtual mounts and other volumes by
+        // default — they cost minutes and contain no cleanable user data.
+        // (Volumes are scanned individually from their own targets.)
+        var excluded = excludedPaths.map { ($0 as NSString).expandingTildeInPath }
+        if scanRootURL.path == "/" {
+            excluded += ["/dev", "/Volumes", "/.Spotlight-V100", "/.fseventsd", "/System/Volumes/Update"]
+        }
         let options = ScanOptions(
             includeHidden: includeHidden,
             followSymlinks: followSymlinks,
             maxDepth: maxDepth,
-            excludedPaths: excludedPaths.map { ($0 as NSString).expandingTildeInPath })
+            excludedPaths: excluded)
         scanTask = Task { [weak self] in
             guard let self else { return }
             let result = await scanner.scan(root: scanRootURL, label: scanTargetName, options: options)

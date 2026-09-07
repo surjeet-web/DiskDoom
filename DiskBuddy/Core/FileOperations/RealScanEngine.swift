@@ -48,15 +48,21 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         records.reserveCapacity(50_000)
         var skipped: [String] = []
         var counter = 0
+        var dirCount = 0
+        var visited = Set<DevIno>()
         let node = scanDir(
             url: root, name: label, path: root.path, depth: 0,
             options: options, records: &records, skipped: &skipped,
-            counter: &counter, progress: { [weak self] in
+            counter: &counter, dirCount: &dirCount, visited: &visited,
+            progress: { [weak self] currentDir, count in
                 guard let self else { return }
+                // Copy into Sendable locals before hopping threads.
+                let dir: String = currentDir
+                let files: Int = count
                 Task { @MainActor in
-                    self.progress = min(0.99, Double(counter) / 200_000.0)
-                    self.currentPath = root.path
-                    self.filesFound = counter
+                    self.progress = min(0.99, Double(files) / 200_000.0)
+                    self.currentPath = dir
+                    self.filesFound = files
                 }
             })
         let elapsed = Date().timeIntervalSince(start)
@@ -65,12 +71,21 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         return ScanResult(root: finalNode, records: records, skipped: skipped, elapsed: elapsed, isPartial: !skipped.isEmpty)
     }
 
+    /// (device, inode) of visited directories — kills symlink cycles,
+    /// firmlink double-walks (/, /System/Volumes/Data, /Users → same inodes),
+    /// and any other hardlinked directory loops.
+    private struct DevIno: Hashable {
+        let dev: Int32
+        let ino: UInt64
+    }
+
     // MARK: Recursive walk
 
     private func scanDir(
         url: URL, name: String, path: String, depth: Int,
         options: ScanOptions, records: inout [ScannedRecord], skipped: inout [String],
-        counter: inout Int, progress: () -> Void
+        counter: inout Int, dirCount: inout Int, visited: inout Set<DevIno>,
+        progress: (String, Int) -> Void
     ) -> ScanNode? {
         if Task.isCancelled { return nil }
         if options.maxDepth > 0 && depth > options.maxDepth { return nil }
@@ -89,12 +104,22 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
             // Single file target.
             let meta = fileMeta(path: path)
             counter += 1
-            if counter % 2000 == 0 { progress() }
+            if counter % 2000 == 0 { progress(path, counter) }
             if records.count < options.maxFiles {
                 records.append(ScannedRecord(path: path, bytes: meta.logical, physical: meta.physical, modified: meta.mtime, isDirectory: false, category: classify(path: path)))
             }
             return ScanNode(name: name, path: path, sizeBytes: meta.logical, category: classify(path: path), fileCount: 1, modified: meta.mtime, physicalBytes: meta.physical)
         }
+        // Directory: cycle guard first (firmlinks/symlinked dirs share inodes).
+        var st = stat()
+        guard stat(path, &st) == 0 else {
+            skipped.append("\(path): Operation not permitted")
+            return nil
+        }
+        let identity = DevIno(dev: st.st_dev, ino: st.st_ino)
+        guard visited.insert(identity).inserted else { return nil } // already walked
+        dirCount += 1
+        if dirCount % 25 == 0 { progress(path, counter) }
         // Directory: enumerate children.
         var dirOptions: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
         if !options.includeHidden { dirOptions.insert(.skipsHiddenFiles) }
@@ -112,7 +137,7 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
             if Task.isCancelled { break }
             let childPath = child.path
             if options.excludedPaths.contains(where: { childPath.hasPrefix($0) }) { continue }
-            if let childNode = scanDir(url: child, name: child.lastPathComponent, path: childPath, depth: depth + 1, options: options, records: &records, skipped: &skipped, counter: &counter, progress: progress) {
+            if let childNode = scanDir(url: child, name: child.lastPathComponent, path: childPath, depth: depth + 1, options: options, records: &records, skipped: &skipped, counter: &counter, dirCount: &dirCount, visited: &visited, progress: progress) {
                 nodes.append(childNode)
                 total += childNode.sizeBytes
                 fileCount += childNode.fileCount
