@@ -3,7 +3,7 @@ import AppKit
 
 // MARK: - Flat file record (Sendable; feeds duplicates/large/old finders)
 
-struct ScannedRecord: Sendable {
+struct ScannedRecord: Sendable, Codable {
     let path: String
     let bytes: Int64
     let physical: Int64

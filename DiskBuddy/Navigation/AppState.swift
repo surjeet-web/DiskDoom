@@ -11,7 +11,7 @@ final class AppState: ObservableObject {
         case explore, duplicates, applications, monitor, snapshots
         case litterScore, forecast, simulator, devCaches, health, budgets, liveFeed
         case lifecycle, provenance, compression, containers, privacy, photos
-        case smartClean, storage
+        case smartClean, storage, folders
         var title: String {
             switch self {
             case .explore: return "Explore"
@@ -34,6 +34,7 @@ final class AppState: ObservableObject {
             case .photos: return "Photos"
             case .smartClean: return "Smart Clean"
             case .storage: return "Storage"
+            case .folders: return "Folders"
             }
         }
 
@@ -59,6 +60,7 @@ final class AppState: ObservableObject {
             case .photos: return "photo.on.rectangle.angled"
             case .smartClean: return "sparkles"
             case .storage: return "internaldrive.fill"
+            case .folders: return "folder.fill"
             }
         }
 
@@ -68,7 +70,7 @@ final class AppState: ObservableObject {
 
         static var insights: [SidebarTab] {
             [.smartClean, .litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed,
-             .lifecycle, .provenance, .compression, .containers, .privacy, .photos, .storage]
+             .lifecycle, .provenance, .compression, .containers, .privacy, .photos, .storage, .folders]
         }
     }
 
@@ -294,6 +296,45 @@ final class AppState: ObservableObject {
                 notifications.postScanComplete(files: result.root.fileCount, bytes: result.root.sizeBytes, seconds: result.elapsed)
             }
             saveSnapshotFromCurrentScan(label: "Scan")
+            // Persist to the SQLite index in the background: failed writes
+            // must never break the scan that just completed.
+            let persistedRoot = result.root
+            let persistedRecords = result.records
+            let persistedElapsed = result.elapsed
+            let persistedLabel = scanTargetName
+            Task.detached {
+                try? await ScanDatabase.shared.saveScan(
+                    root: persistedRoot, records: persistedRecords,
+                    label: persistedLabel, elapsed: persistedElapsed)
+            }
+        }
+    }
+
+    /// Launch hydration: instant tree from SQLite, records stream in after.
+    /// Called by the launch coordinator; safe to call when nothing is cached.
+    func restoreCachedScan() async {
+        guard scanRoot == nil,
+              let cached = try? await ScanDatabase.shared.latestScan(),
+              let tree = cached.tree
+        else { return }
+        scanRoot = tree
+        scanTargetName = cached.label
+        lastScanDate = cached.date
+        scanElapsed = cached.elapsed
+        selectedNode = tree.children.first
+        let scanID = cached.id
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var all: [ScannedRecord] = []
+            var offset = 0
+            while true {
+                let batch = (try? await ScanDatabase.shared.loadFiles(scanID: scanID, limit: 20_000, offset: offset)) ?? []
+                if batch.isEmpty { break }
+                all += batch
+                offset += batch.count
+                if Task.isCancelled { return }
+            }
+            self.records = all
         }
     }
 

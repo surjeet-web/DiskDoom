@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Scan model (prototype mock data matching spec §05 annotations)
 
-enum NodeCategory: String, CaseIterable, Hashable {
+enum NodeCategory: String, CaseIterable, Hashable, Codable, Sendable {
     case applications, system, userData, caches, logs, stale, duplicates, other
 
     var label: String {
@@ -45,7 +45,7 @@ enum NodeCategory: String, CaseIterable, Hashable {
     }
 }
 
-struct ScanNode: Identifiable, Hashable {
+struct ScanNode: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     let name: String
     let path: String

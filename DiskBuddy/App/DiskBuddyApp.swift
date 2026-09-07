@@ -129,6 +129,7 @@ struct DiskBuddyApp: App {
                 Button("Photos") { state.sidebarTab = .photos }
                 Button("Smart Clean") { state.sidebarTab = .smartClean }
                 Button("Storage") { state.sidebarTab = .storage }
+                Button("Folders") { state.sidebarTab = .folders }
             }
         }
 

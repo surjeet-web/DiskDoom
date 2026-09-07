@@ -32,6 +32,9 @@ enum LaunchJobs {
         coordinator.registerForeground(name: "Reload snapshot index") {
             state.snapshots = ScanStore.loadSnapshots(retention: state.snapshotRetention)
         }
+        coordinator.registerForeground(name: "Restore cached scan") {
+            await state.restoreCachedScan()
+        }
         coordinator.registerForeground(name: "Verify cache freshness", priority: .high) {
             if let last = state.lastScanDate, Date().timeIntervalSince(last) > 86_400 {
                 coordinator.markCacheStale()

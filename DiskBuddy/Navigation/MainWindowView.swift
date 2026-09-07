@@ -245,7 +245,7 @@ struct MainWindowView: View {
             ScanProgressView()
         } else if state.scanPhase == .failed {
             ScanFailedView()
-        } else if state.scanPhase == .idle {
+        } else if state.scanPhase == .idle && state.scanRoot == nil {
             EmptyState(
                 symbol: "magnifyingglass",
                 title: "Ready to Scan",
@@ -285,6 +285,7 @@ struct MainWindowView: View {
             case .photos: PhotoLibraryView()
             case .smartClean: SmartCleanView()
             case .storage: StorageView()
+            case .folders: FolderExplorerView()
             }
         }
     }

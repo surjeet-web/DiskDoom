@@ -1,6 +1,6 @@
 import Foundation
 import AppKit
-import UserNotifications
+@preconcurrency import UserNotifications
 
 // MARK: - Real permission checks: Full Disk Access probe + notification status
 //
@@ -8,8 +8,8 @@ import UserNotifications
 // locations. Granted if ANY probe succeeds; denied only if all probes fail
 // with EPERM/EACCES (ENOENT is inconclusive and skipped). Re-checked every
 // time the app becomes active (retained observer, removed in deinit).
-
-final class PermissionsService: ObservableObject {
+// Main-confined in practice (all entry points run on main), hence Sendable.
+final class PermissionsService: ObservableObject, @unchecked Sendable {
     @Published private(set) var fdaGranted = false
     @Published private(set) var fdaChecked = false
     @Published private(set) var notificationStatus: UNAuthorizationStatus = .notDetermined
@@ -35,7 +35,9 @@ final class PermissionsService: ObservableObject {
         fdaGranted = probeFullDiskAccess()
         fdaChecked = true
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
-            DispatchQueue.main.async { self?.notificationStatus = settings.authorizationStatus }
+            guard let self else { return }
+            let status = settings.authorizationStatus
+            DispatchQueue.main.async { self.notificationStatus = status }
         }
     }
 
