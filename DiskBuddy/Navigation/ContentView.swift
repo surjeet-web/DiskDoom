@@ -1,24 +1,25 @@
-//
-//  ContentView.swift
-//  DiskBuddy
-//
-//  Created by surjeet on 07/09/26.
-//
-
 import SwiftUI
 
+// MARK: - Root: onboarding (§01–§03) vs main window (§04–§06)
+
 struct ContentView: View {
+    @EnvironmentObject var state: AppState
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        Group {
+            if let step = state.onboardingStep {
+                switch step {
+                case .welcome: WelcomeView()
+                case .fullDiskAccess: FullDiskAccessView()
+                case .scanTarget: ScanTargetView()
+                }
+            } else {
+                MainWindowView()
+            }
         }
-        .padding()
     }
 }
 
 #Preview {
-    ContentView()
+    ContentView().environmentObject(AppState())
 }
