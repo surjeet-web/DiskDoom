@@ -8,6 +8,7 @@ final class AppState: ObservableObject {
     enum SidebarTab: String, CaseIterable {
         case explore, duplicates, applications, monitor, snapshots
         case litterScore, forecast, simulator, devCaches, health, budgets, liveFeed
+        case lifecycle, provenance, compression, containers, privacy, photos
         var title: String {
             switch self {
             case .explore: return "Explore"
@@ -22,6 +23,12 @@ final class AppState: ObservableObject {
             case .health: return "Health"
             case .budgets: return "Budgets"
             case .liveFeed: return "Live Feed"
+            case .lifecycle: return "Lifecycle"
+            case .provenance: return "Provenance"
+            case .compression: return "Compression"
+            case .containers: return "Containers"
+            case .privacy: return "Privacy"
+            case .photos: return "Photos"
             }
         }
 
@@ -39,6 +46,12 @@ final class AppState: ObservableObject {
             case .health: return "heart.text.square"
             case .budgets: return "gauge.with.dots.needle.33percent"
             case .liveFeed: return "antenna.radiowaves.left.and.right"
+            case .lifecycle: return "clock.arrow.circlepath"
+            case .provenance: return "magnifyingglass.circle"
+            case .compression: return "archivebox.fill"
+            case .containers: return "square.grid.3x3.fill.square"
+            case .privacy: return "lock.shield.fill"
+            case .photos: return "photo.on.rectangle.angled"
             }
         }
 
@@ -49,7 +62,8 @@ final class AppState: ObservableObject {
 
         /// Differentiation tabs (D1–D13), no global shortcuts to avoid clashes.
         static var insights: [SidebarTab] {
-            [.litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed]
+            [.litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed,
+             .lifecycle, .provenance, .compression, .containers, .privacy, .photos]
         }
     }
 

@@ -247,6 +247,12 @@ struct MainWindowView: View {
             case .health: DiskHealthView()
             case .budgets: SpaceBudgetView()
             case .liveFeed: FileFeedView()
+            case .lifecycle: AppLifecycleView()
+            case .provenance: FileProvenanceView()
+            case .compression: SmartCompressionView()
+            case .containers: ContainerView()
+            case .privacy: PrivacyView()
+            case .photos: PhotoLibraryView()
             }
         }
     }

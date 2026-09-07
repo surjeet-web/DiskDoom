@@ -10,6 +10,12 @@ struct DiskBuddyApp: App {
     @StateObject private var healthEngine = DiskHealthEngine()
     @StateObject private var budgetEngine = SpaceBudgetEngine()
     @StateObject private var feedMonitor = FileFeedMonitor()
+    @StateObject private var lifecycleEngine = AppLifecycleEngine()
+    @StateObject private var provenanceEngine = FileProvenanceEngine()
+    @StateObject private var compressionEngine = SmartCompressionEngine()
+    @StateObject private var containerScanner = ContainerScanner()
+    @StateObject private var privacyEngine = PrivacyScannerEngine()
+    @StateObject private var photoAnalyzer = PhotoLibraryAnalyzer()
 
     var body: some Scene {
         WindowGroup {
@@ -22,6 +28,12 @@ struct DiskBuddyApp: App {
                 .environmentObject(healthEngine)
                 .environmentObject(budgetEngine)
                 .environmentObject(feedMonitor)
+                .environmentObject(lifecycleEngine)
+                .environmentObject(provenanceEngine)
+                .environmentObject(compressionEngine)
+                .environmentObject(containerScanner)
+                .environmentObject(privacyEngine)
+                .environmentObject(photoAnalyzer)
         }
         .defaultSize(width: 1100, height: 700)
         .commands {
@@ -87,6 +99,13 @@ struct DiskBuddyApp: App {
                 Button("Health") { state.sidebarTab = .health }
                 Button("Budgets") { state.sidebarTab = .budgets }
                 Button("Live Feed") { state.sidebarTab = .liveFeed }
+                Divider()
+                Button("Lifecycle") { state.sidebarTab = .lifecycle }
+                Button("Provenance") { state.sidebarTab = .provenance }
+                Button("Compression") { state.sidebarTab = .compression }
+                Button("Containers") { state.sidebarTab = .containers }
+                Button("Privacy") { state.sidebarTab = .privacy }
+                Button("Photos") { state.sidebarTab = .photos }
             }
         }
 
