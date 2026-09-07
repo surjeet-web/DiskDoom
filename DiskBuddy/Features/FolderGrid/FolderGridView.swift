@@ -13,21 +13,12 @@ struct FolderGridView: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
-            HStack(spacing: DesignTokens.Space.xs) {
-                Button(state.effectiveRoot.name) {
-                    drillPath = [state.effectiveRoot]
-                }
-                .buttonStyle(.link)
-                ForEach(drillPath, id: \.id) { node in
-                    Text("▸").foregroundStyle(.tertiary)
-                    Button(node.name) {
-                        while drillPath.last?.id != node.id { drillPath.removeLast() }
-                    }
-                    .buttonStyle(.link)
-                }
-                Spacer()
-            }
-            .font(.caption)
+            PageHeader(
+                title: current.name,
+                segments: crumbs,
+                canGoBack: !drillPath.isEmpty,
+                onBack: { drillPath.removeLast() },
+                fallback: { drillPath = [state.effectiveRoot] })
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180))], spacing: DesignTokens.Space.m) {
                     ForEach(cells, id: \.id) { node in
@@ -96,6 +87,20 @@ struct FolderGridView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(DesignTokens.Space.m)
+    }
+
+    private var crumbs: [Crumb] {
+        var result: [Crumb] = [.link(state.effectiveRoot.name) { drillPath = [state.effectiveRoot] }]
+        for node in drillPath {
+            if node.id == drillPath.last?.id {
+                result.append(.here(node.name))
+            } else {
+                result.append(.link(node.name) {
+                    while drillPath.last?.id != node.id { drillPath.removeLast() }
+                })
+            }
+        }
+        return result
     }
 }
 

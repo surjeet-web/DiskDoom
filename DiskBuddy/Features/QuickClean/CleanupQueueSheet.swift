@@ -4,6 +4,7 @@ import SwiftUI
 
 struct CleanupQueueSheet: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var overlays: OverlayStack
     @State private var confirmed = false
 
     private var groups: [(source: String, items: [CleanupItem])] {
@@ -18,6 +19,9 @@ struct CleanupQueueSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
+            ModalHeader(title: "Cleanup Queue", overlayID: "cleanup") {
+                state.showCleanup = false
+            }
             Text("Cleanup Queue")
                 .font(.title2.weight(.semibold))
             Text("\(state.cleanupItems.count) items staged · \(state.cleanupTotal.fileSizeString) to free")
@@ -108,9 +112,12 @@ struct CleanupQueueSheet: View {
         }
         .padding(DesignTokens.Space.xl)
         .frame(width: 600, height: 560)
+        .onAppear { overlays.present("cleanup") }
+        .onDisappear { overlays.dismiss("cleanup") }
         .sheet(isPresented: $state.showDeleteConfirm) {
             DeleteConfirmSheet()
                 .environmentObject(state)
+                .environmentObject(overlays)
         }
     }
 }
@@ -119,9 +126,13 @@ struct CleanupQueueSheet: View {
 
 private struct DeleteConfirmSheet: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var overlays: OverlayStack
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.m) {
+            ModalHeader(title: "Confirm Cleanup", overlayID: "cleanup-confirm") {
+                state.showDeleteConfirm = false
+            }
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.largeTitle)
                 .foregroundStyle(.orange)
@@ -135,7 +146,6 @@ private struct DeleteConfirmSheet: View {
             HStack {
                 Button("Cancel") { state.showDeleteConfirm = false }
                     .buttonStyle(.bordered)
-                    .keyboardShortcut(.cancelAction)
                 Button("Move to Trash") {
                     state.executeCleanup()
                 }
@@ -146,6 +156,8 @@ private struct DeleteConfirmSheet: View {
         }
         .padding(DesignTokens.Space.xl)
         .frame(width: 440)
+        .onAppear { overlays.present("cleanup-confirm") }
+        .onDisappear { overlays.dismiss("cleanup-confirm") }
     }
 }
 

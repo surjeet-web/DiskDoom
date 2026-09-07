@@ -35,6 +35,17 @@ struct ScanTargetView: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.m) {
+            WizardHeader(
+                step: 3,
+                totalSteps: 3,
+                onBack: {
+                    withAnimation(.easeOut(duration: DesignTokens.Motion.base)) {
+                        state.onboardingStep = .fullDiskAccess
+                    }
+                }) {
+                state.limitedMode = true
+                state.finishOnboarding()
+            }
             Text("What do you want to scan?")
                 .font(.title2.weight(.semibold))
                 .padding(.top, DesignTokens.Space.xl)

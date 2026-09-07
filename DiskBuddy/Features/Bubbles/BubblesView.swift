@@ -16,16 +16,12 @@ struct BubblesView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
             if !drillPath.isEmpty {
-                HStack {
-                    Button("All") { drillPath.removeAll() }
-                        .buttonStyle(.link)
-                    ForEach(drillPath, id: \.id) { node in
-                        Text("▸").foregroundStyle(.tertiary)
-                        Text(node.name)
-                    }
-                    Spacer()
-                }
-                .font(.caption)
+                PageHeader(
+                    title: "Bubbles",
+                    segments: crumbs,
+                    canGoBack: !drillPath.isEmpty,
+                    onBack: { drillPath.removeLast() },
+                    fallback: { drillPath.removeAll() })
             }
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 16)], spacing: 16) {
@@ -81,6 +77,20 @@ struct BubblesView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(DesignTokens.Space.m)
+    }
+
+    private var crumbs: [Crumb] {
+        var result: [Crumb] = [.link("All") { drillPath.removeAll() }]
+        for node in drillPath {
+            if node.id == drillPath.last?.id {
+                result.append(.here(node.name))
+            } else {
+                result.append(.link(node.name) {
+                    while drillPath.last?.id != node.id { drillPath.removeLast() }
+                })
+            }
+        }
+        return result
     }
 }
 

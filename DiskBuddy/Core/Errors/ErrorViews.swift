@@ -108,6 +108,7 @@ struct ScanFailedView: View {
 
 struct QuickLookSheet: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var overlays: OverlayStack
     let node: ScanNode
 
     private var fileURL: URL {
@@ -120,6 +121,9 @@ struct QuickLookSheet: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.m) {
+            ModalHeader(title: "Quick Look", overlayID: "quicklook") {
+                state.quickLookNode = nil
+            }
             Image(nsImage: NSWorkspace.shared.icon(forFile: fileURL.path))
                 .resizable()
                 .frame(width: 96, height: 96)
@@ -140,6 +144,8 @@ struct QuickLookSheet: View {
                 .keyboardShortcut(.defaultAction)
         }
         .padding(DesignTokens.Space.xl)
-        .frame(width: 480, height: 480)
+        .frame(width: 480, height: 520)
+        .onAppear { overlays.present("quicklook") }
+        .onDisappear { overlays.dismiss("quicklook") }
     }
 }

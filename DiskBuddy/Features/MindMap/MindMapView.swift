@@ -8,11 +8,20 @@ struct MindMapView: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
-            HStack {
-                Text("Click any node to focus · Double-click to drill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
+            if path.count > 1 {
+                PageHeader(
+                    title: "Mind Map",
+                    segments: mindCrumbs,
+                    canGoBack: path.count > 1,
+                    onBack: { path.removeLast() },
+                    fallback: { path = [state.effectiveRoot] })
+            } else {
+                HStack {
+                    Text("Click any node to focus · Double-click to drill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
             }
             GeometryReader { proxy in
                 ScrollView(.horizontal, showsIndicators: true) {
@@ -37,10 +46,16 @@ struct MindMapView: View {
     private func mindColumn(node: ScanNode, depth: Int, totalWidth: CGFloat) -> some View {
         VStack(spacing: DesignTokens.Space.s) {
             mindNode(node, width: 170)
-            if depth > 0 {
-                Text("⌘↑: back · Esc: up one level")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var mindCrumbs: [Crumb] {
+        path.enumerated().map { index, node in
+            if index == path.count - 1 {
+                return Crumb.here(node.name)
+            }
+            return Crumb.link(node.name) {
+                path = Array(path.prefix(index + 1))
             }
         }
     }

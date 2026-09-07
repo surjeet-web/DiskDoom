@@ -48,8 +48,11 @@ struct SnapshotsView: View {
         }
         .padding(DesignTokens.Space.m)
         .sheet(isPresented: $comparing) {
-            SnapshotComparisonView()
-                .environmentObject(state)
+            SnapshotComparisonView(onClose: {
+                comparing = false
+                state.compareIDs.removeAll()
+            })
+            .environmentObject(state)
         }
     }
 
@@ -105,7 +108,9 @@ private struct SnapshotCard: View {
 
 private struct SnapshotComparisonView: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var overlays: OverlayStack
     @State private var filter: ChangeFilter = .all
+    let onClose: () -> Void
 
     enum ChangeFilter: String, CaseIterable { case all, grew, shrank }
 
@@ -132,6 +137,7 @@ private struct SnapshotComparisonView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
+            ModalHeader(title: "Compare Snapshots", overlayID: "snapshots-compare", onClose: onClose)
             if selected.count == 2 {
                 let a = selected[0], b = selected[1]
                 let delta = b.totalBytes - a.totalBytes
@@ -183,14 +189,16 @@ private struct SnapshotComparisonView: View {
                 .buttonStyle(.bordered)
                 .disabled(rows.isEmpty)
                 Button("Done") {
-                    state.compareIDs.removeAll()
+                    onClose()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(DesignTokens.Space.xl)
-        .frame(width: 640, height: 520)
+        .frame(width: 640, height: 560)
+        .onAppear { overlays.present("snapshots-compare") }
+        .onDisappear { overlays.dismiss("snapshots-compare") }
     }
 }
 

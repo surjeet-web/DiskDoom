@@ -48,7 +48,7 @@ actor ScanDatabase {
     // last-use, so unchecked sharing out of deinit is sound.
     nonisolated(unsafe) private var db: OpaquePointer?
     private let dbURL: URL
-    private let schemaVersion = 1
+    private let schemaVersion = 2
 
     init(dbURL: URL? = nil) {
         if let dbURL {
@@ -111,6 +111,7 @@ actor ScanDatabase {
                 CREATE TABLE IF NOT EXISTS file_hashes(
                     path TEXT PRIMARY KEY,
                     size INTEGER NOT NULL,
+                    mtime REAL NOT NULL DEFAULT 0,
                     sha256 TEXT NOT NULL,
                     updated REAL NOT NULL
                 )
@@ -121,8 +122,15 @@ actor ScanDatabase {
                 "CREATE TABLE IF NOT EXISTS app_artifacts(bundle_id TEXT NOT NULL, path TEXT NOT NULL, bytes INTEGER NOT NULL, kind TEXT NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS idx_artifacts_bundle ON app_artifacts(bundle_id)",
                 "CREATE TABLE IF NOT EXISTS query_results(id TEXT PRIMARY KEY, kind TEXT NOT NULL, created REAL NOT NULL, payload TEXT NOT NULL)",
-                "PRAGMA user_version = 1",
+                "PRAGMA user_version = 2",
             ])
+            return
+        }
+        if current < 2 {
+            // v1 file_hashes lacked mtime: add it (defaults 0 = always stale
+            // until re-hashed — safe direction).
+            try exec("ALTER TABLE file_hashes ADD COLUMN mtime REAL NOT NULL DEFAULT 0")
+            try exec("PRAGMA user_version = 2")
         }
     }
 
@@ -181,25 +189,32 @@ actor ScanDatabase {
         }
     }
 
-    func storeHash(path: String, size: Int64, sha256: String) throws {
+    func storeHash(path: String, size: Int64, mtime: Date, sha256: String) throws {
         try open()
-        try run("INSERT OR REPLACE INTO file_hashes(path, size, sha256, updated) VALUES(?,?,?,?)", bind: {
+        try run("INSERT OR REPLACE INTO file_hashes(path, size, mtime, sha256, updated) VALUES(?,?,?,?,?)", bind: {
             self.bindText($0, 1, path)
             self.bindInt($0, 2, size)
-            self.bindText($0, 3, sha256)
-            self.bindDouble($0, 4, Date().timeIntervalSince1970)
+            self.bindDouble($0, 3, mtime.timeIntervalSince1970)
+            self.bindText($0, 4, sha256)
+            self.bindDouble($0, 5, Date().timeIntervalSince1970)
         })
     }
 
-    func cachedHash(path: String) throws -> String? {
+    /// Validated lookup: path + size + mtime must all match, otherwise the
+    /// file changed and the hash is stale (caller re-hashes; REPLACE on store
+    /// lazily evicts the stale row).
+    func cachedHash(path: String, size: Int64, mtime: Date) throws -> String? {
         try open()
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT sha256 FROM file_hashes WHERE path = ?", -1, &stmt, nil) == SQLITE_OK, let stmt else {
+        guard sqlite3_prepare_v2(db, "SELECT sha256, size, mtime FROM file_hashes WHERE path = ?", -1, &stmt, nil) == SQLITE_OK, let stmt else {
             throw ScanDatabaseError.prepareFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
         bindText(stmt, 1, path)
         guard sqlite3_step(stmt) == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) else { return nil }
+        guard sqlite3_column_int64(stmt, 1) == size,
+              abs(sqlite3_column_double(stmt, 2) - mtime.timeIntervalSince1970) < 1.0
+        else { return nil }
         return String(cString: text)
     }
 

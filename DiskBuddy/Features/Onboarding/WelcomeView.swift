@@ -8,6 +8,10 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
+            WizardHeader(step: 1, totalSteps: 3, onBack: nil) {
+                state.limitedMode = true
+                state.finishOnboarding()
+            }
             Spacer()
             DiskDoomLogo(style: .full, size: 120)
                 .opacity(appeared ? 1 : 0)

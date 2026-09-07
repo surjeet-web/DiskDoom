@@ -82,9 +82,13 @@ struct FolderInspectorSheet: View {
 
     @Environment(\.dismiss)
     private var dismiss
+    @EnvironmentObject var overlays: OverlayStack
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.l) {
+            ModalHeader(title: "Inspector", overlayID: "explorer-inspector") {
+                dismiss()
+            }
             HStack {
                 Image(systemName: node.isDirectory ? "folder.fill" : "doc.fill")
                     .font(.largeTitle)
@@ -158,6 +162,8 @@ struct FolderInspectorSheet: View {
             }
         }
         .padding()
-        .frame(minWidth: 520, idealWidth: 520, maxWidth: 520, minHeight: 360)
+        .frame(minWidth: 520, idealWidth: 520, maxWidth: 520, minHeight: 400)
+        .onAppear { overlays.present("explorer-inspector") }
+        .onDisappear { overlays.dismiss("explorer-inspector") }
     }
 }

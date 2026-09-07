@@ -183,6 +183,17 @@ private struct ScanningSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Scan Index") {
+                Text("SQLite index of scan results and file hashes (~/Library/Application Support/DiskBuddy/Cache.sqlite). Snapshots, settings, and license are stored separately and are never touched.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Clear Scan Cache") {
+                    Task {
+                        try? await ScanDatabase.shared.deleteDatabaseFile()
+                    }
+                }
+                .foregroundStyle(.red)
+            }
             Section("Duplicate Detection") {
                 Picker("Minimum file size", selection: saved(\.dupMinBytes)) {
                     Text("1 MB").tag(Int64(1_000_000))

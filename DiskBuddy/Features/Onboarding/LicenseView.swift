@@ -4,6 +4,7 @@ import SwiftUI
 
 struct LicenseView: View {
     @EnvironmentObject var store: LicenseStore
+    @EnvironmentObject var overlays: OverlayStack
     @Environment(\.dismiss) private var dismiss
     @State private var key = ""
     @State private var email = ""
@@ -11,6 +12,9 @@ struct LicenseView: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.m) {
+            ModalHeader(title: "License", overlayID: "license") {
+                dismiss()
+            }
             Image(systemName: store.isLicensed ? "checkmark.seal.fill" : "lock.open.fill")
                 .font(.system(size: 64))
                 .foregroundStyle(store.isLicensed ? .green : Color.accentColor)
@@ -95,8 +99,12 @@ struct LicenseView: View {
             }
         }
         .padding(DesignTokens.Space.xl)
-        .frame(width: 480, height: 640)
-        .onAppear { store.refresh() }
+        .frame(width: 480, height: 680)
+        .onAppear {
+            store.refresh()
+            overlays.present("license")
+        }
+        .onDisappear { overlays.dismiss("license") }
     }
 
     private func activate() {

@@ -8,6 +8,17 @@ struct FullDiskAccessView: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
+            WizardHeader(
+                step: 2,
+                totalSteps: 3,
+                onBack: {
+                    withAnimation(.easeOut(duration: DesignTokens.Motion.base)) {
+                        state.onboardingStep = .welcome
+                    }
+                }) {
+                state.limitedMode = true
+                state.finishOnboarding()
+            }
             Spacer()
             Image(systemName: "folder.fill.badge.magnifyingglass")
                 .font(.system(size: 80))

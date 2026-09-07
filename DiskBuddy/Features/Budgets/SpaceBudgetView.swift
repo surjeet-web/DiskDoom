@@ -91,12 +91,16 @@ private struct BudgetCard: View {
 
 private struct AddBudgetSheet: View {
     @EnvironmentObject var engine: SpaceBudgetEngine
+    @EnvironmentObject var overlays: OverlayStack
     @Environment(\.dismiss) private var dismiss
     @State private var category: BudgetCategory = .caches
     @State private var maxGB = 20.0
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
+            ModalHeader(title: "Add Budget", overlayID: "budget-add") {
+                dismiss()
+            }
             Text("Add Storage Budget").font(.title2.weight(.semibold))
             Picker("Category", selection: $category) {
                 ForEach(BudgetCategory.allCases, id: \.self) { cat in
@@ -111,7 +115,7 @@ private struct AddBudgetSheet: View {
                 Text("GB")
             }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
                 Spacer()
                 Button("Add Budget") {
                     engine.addBudget(category: category, maxGB: maxGB)
@@ -123,6 +127,8 @@ private struct AddBudgetSheet: View {
         }
         .padding()
         .frame(width: 360)
+        .onAppear { overlays.present("budget-add") }
+        .onDisappear { overlays.dismiss("budget-add") }
     }
 }
 

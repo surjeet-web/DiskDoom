@@ -69,19 +69,26 @@ struct TreemapView: View {
     }
 
     private var breadcrumb: some View {
-        HStack(spacing: DesignTokens.Space.xs) {
-            Button("All") { drillPath.removeAll() }
-                .buttonStyle(.link)
-            ForEach(drillPath, id: \.id) { node in
-                Text("▸").foregroundStyle(.tertiary)
-                Button(node.name) {
+        PageHeader(
+            title: "Treemap",
+            segments: crumbs,
+            canGoBack: !drillPath.isEmpty,
+            onBack: { drillPath.removeLast() },
+            fallback: { drillPath.removeAll() })
+    }
+
+    private var crumbs: [Crumb] {
+        var result: [Crumb] = [.link("All") { drillPath.removeAll() }]
+        for node in drillPath {
+            if node.id == drillPath.last?.id {
+                result.append(.here(node.name))
+            } else {
+                result.append(.link(node.name) {
                     while drillPath.last?.id != node.id { drillPath.removeLast() }
-                }
-                .buttonStyle(.link)
+                })
             }
-            Spacer()
         }
-        .font(.caption)
+        return result
     }
 }
 

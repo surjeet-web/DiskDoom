@@ -17,9 +17,9 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
         task = Task { [weak self] in
             guard let self else { return }
             await MainActor.run { self.isRunning = true; self.sets = []; self.progress = 0 }
-            let found = await Task.detached {
-                Self.findSync(records: records, minBytes: minBytes)
-            }.value
+            let found = await Self.findAsync(records: records, minBytes: minBytes) { fraction in
+                await MainActor.run { self.progress = fraction }
+            }
             guard !Task.isCancelled else {
                 await MainActor.run { self.isRunning = false }
                 return
@@ -37,7 +37,15 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
         task = nil
     }
 
-    private static func findSync(records: [ScannedRecord], minBytes: Int64) -> [DuplicateSet] {
+    /// Async pipeline with hash-cache consult: full SHA-256 hits are keyed by
+    /// path + size + mtime, so second scans skip unchanged files (10–50x).
+    /// Unchanged files keep their cache rows; replaced files miss and re-hash
+    /// (REPLACE on store lazily evicts the stale row).
+    private static func findAsync(
+        records: [ScannedRecord],
+        minBytes: Int64,
+        report: (Double) async -> Void
+    ) async -> [DuplicateSet] {
         // Stage 1: size buckets (different sizes can't be duplicates).
         var buckets: [Int64: [ScannedRecord]] = [:]
         for record in records where !record.isDirectory && record.bytes >= minBytes {
@@ -45,13 +53,13 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
             buckets[record.bytes, default: []].append(record)
         }
         var sets: [DuplicateSet] = []
-        var done = 0
-        let total = buckets.count
+        var hashed = 0
+        var cacheHits = 0
+        let totalCandidates = buckets.values.filter { $0.count >= 2 }.reduce(0) { $0 + $1.count }
         for (_, group) in buckets {
             if Task.isCancelled { return [] }
-            done += 1
             guard group.count >= 2 else { continue }
-            // Stage 2: 8KB sample hash.
+            // Stage 2: 8KB sample hash (cheap, in-memory only).
             var sampleGroups: [String: [ScannedRecord]] = [:]
             for record in group {
                 if Task.isCancelled { return [] }
@@ -60,12 +68,23 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
                 }
             }
             for (_, candidates) in sampleGroups where candidates.count >= 2 {
-                // Stage 3: full SHA-256.
+                // Stage 3: full SHA-256, cache-consulted.
                 var fullGroups: [String: [ScannedRecord]] = [:]
                 for record in candidates {
                     if Task.isCancelled { return [] }
-                    if let hash = fullHash(path: record.path) {
+                    if let cached = try? await ScanDatabase.shared.cachedHash(
+                        path: record.path, size: record.bytes, mtime: record.modified) {
+                        fullGroups[cached, default: []].append(record)
+                        cacheHits += 1
+                    } else if let hash = fullHash(path: record.path) {
                         fullGroups[hash, default: []].append(record)
+                        try? await ScanDatabase.shared.storeHash(
+                            path: record.path, size: record.bytes,
+                            mtime: record.modified, sha256: hash)
+                    }
+                    hashed += 1
+                    if hashed % 25 == 0, totalCandidates > 0 {
+                        await report(0.1 + 0.8 * Double(hashed) / Double(totalCandidates))
                     }
                 }
                 for (hash, files) in fullGroups where files.count >= 2 {
@@ -74,8 +93,8 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
                         files: files.map { DuplicateFile(path: $0.path, bytes: $0.bytes) }))
                 }
             }
-            _ = (done, total)
         }
+        _ = cacheHits
         return sets.sorted { $0.reclaimable > $1.reclaimable }
     }
 

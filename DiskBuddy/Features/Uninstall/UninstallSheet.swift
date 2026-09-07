@@ -4,11 +4,15 @@ import SwiftUI
 
 struct UninstallSheet: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var overlays: OverlayStack
     let app: AppEntry
     @State private var keepSharedFramework = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
+            ModalHeader(title: "Uninstall", overlayID: "uninstall") {
+                state.uninstallApp = nil
+            }
             HStack(spacing: DesignTokens.Space.m) {
                 Image(systemName: app.symbol)
                     .font(.largeTitle)
@@ -54,7 +58,6 @@ struct UninstallSheet: View {
                 Spacer()
                 Button("Cancel") { state.uninstallApp = nil }
                     .buttonStyle(.bordered)
-                    .keyboardShortcut(.cancelAction)
                 Button("Move to Trash") {
                     state.stage(source: "Uninstall", path: "/Applications/\(app.name).app", bytes: app.bundleBytes)
                     state.stage(source: "Uninstall", path: "\(app.name) artifacts", bytes: app.artifactBytes)
@@ -68,6 +71,8 @@ struct UninstallSheet: View {
         }
         .padding(DesignTokens.Space.xl)
         .frame(width: 520)
+        .onAppear { overlays.present("uninstall") }
+        .onDisappear { overlays.dismiss("uninstall") }
     }
 }
 

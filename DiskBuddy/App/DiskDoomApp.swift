@@ -21,6 +21,7 @@ struct DiskDoomApp: App {
     @StateObject private var photoAnalyzer = PhotoLibraryAnalyzer()
     @StateObject private var topology = DiskTopologyService()
     @StateObject private var coordinator = LaunchCoordinator()
+    @StateObject private var overlays = OverlayStack()
     @State private var showSplash = true
 
     var body: some Scene {
@@ -46,8 +47,9 @@ struct DiskDoomApp: App {
                     .environmentObject(state.notifications)
                     .environmentObject(state.license)
                     .environmentObject(state.dupFinder)
-                    .environmentObject(topology)
-                    .environmentObject(coordinator)
+                .environmentObject(topology)
+                .environmentObject(coordinator)
+                .environmentObject(overlays)
                     .task {
                         // Window is already visible here — jobs hydrate progressively.
                         LaunchJobs.registerAll(

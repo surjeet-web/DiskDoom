@@ -18,14 +18,12 @@ struct FlameView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
             if focus != nil {
-                HStack {
-                    Button("All") { focus = nil }
-                        .buttonStyle(.link)
-                    Text("▸").foregroundStyle(.tertiary)
-                    Text(focus!.name)
-                    Spacer()
-                }
-                .font(.caption)
+                PageHeader(
+                    title: "Flame Graph",
+                    segments: [.link("All") { focus = nil }, .here(focus!.name)],
+                    canGoBack: true,
+                    onBack: { focus = nil },
+                    fallback: { focus = nil })
             }
             GeometryReader { proxy in
                 VStack(spacing: 4) {
