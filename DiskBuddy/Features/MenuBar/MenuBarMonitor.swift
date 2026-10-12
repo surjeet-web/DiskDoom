@@ -234,7 +234,12 @@ final class MenuBarMonitor: ObservableObject {
 
     // MARK: - Update from scan results (real records + real inventory)
 
-    func updateFromScan(records: [ScannedRecord], apps: [AppEntry], litterScore: Int?, healthGrade: String?) {
+    /// `scanDate` is when the data being shown was actually scanned — nil
+    /// when no scan has ever run. WHY: this used to stamp `Date()` here, but
+    /// `updateFromScan` is also fired by a launch-time cache restore of a
+    /// week-old snapshot, so the panel printed "Top Space Hogs · 2 minutes
+    /// ago" next to sizes measured days earlier.
+    func updateFromScan(records: [ScannedRecord], apps: [AppEntry], litterScore: Int?, healthGrade: String?, scanDate: Date?) {
         var hogs: [SpaceHog] = []
 
         // Largest individual files (> 100 MB).
@@ -265,7 +270,8 @@ final class MenuBarMonitor: ObservableObject {
 
         hogs.sort { $0.size > $1.size }
         topSpaceHogs = Array(hogs.prefix(8))
-        lastScanDate = Date()
+        // Never invent freshness: nil means "no scan yet" in the panel.
+        lastScanDate = scanDate
         self.litterScore = litterScore
         self.healthGrade = healthGrade
     }

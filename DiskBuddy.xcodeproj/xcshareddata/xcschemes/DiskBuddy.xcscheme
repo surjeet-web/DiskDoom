@@ -39,8 +39,18 @@
                ReferencedContainer = "container:DiskBuddy.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <!--
+             UI smoke tests (launch, ⌘, Settings scene, sidebar navigation).
+             They are wired into the scheme but skipped by default because
+             macOS requires a one-time Accessibility grant for
+             DiskBuddyUITests-Runner, which cannot be given non-interactively:
+             without it the run fails with "The test runner failed to
+             initialize for UI testing (Authentication cancelled)".
+             To enable: set skipped = "NO" below, then approve the prompt
+             (System Settings > Privacy & Security > Accessibility).
+         -->
          <TestableReference
-            skipped = "NO">
+            skipped = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "DC097B09304EE1BC009736E9"

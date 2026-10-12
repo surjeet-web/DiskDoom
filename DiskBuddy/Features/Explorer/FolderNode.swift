@@ -19,6 +19,10 @@ struct FolderNode: Identifiable, Hashable, Sendable {
     let fileExtension: String?
     let percentageOfParent: Double
 
+    /// WHY: permission-denied children must not render a measured-looking
+    /// "0 B" / "0.0%" — the row shows a lock + "Permission denied" instead.
+    var isUnreadable: Bool = false
+
     var sizeFormatted: String {
         ByteFormatting.format(size)
     }

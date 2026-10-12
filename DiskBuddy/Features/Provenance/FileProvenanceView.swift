@@ -48,6 +48,12 @@ struct FileProvenanceView: View {
                         provenanceRow(icon: "doc.fill", title: (prov.filePath as NSString).lastPathComponent, detail: prov.filePath)
                         if let method = prov.method {
                             provenanceRow(icon: method.symbol, title: method.label, detail: prov.createdBy.map { "Created by \($0)" })
+                        } else {
+                            // WHY: no origin metadata exists for this file —
+                            // showing nothing (or a guessed method) implied we
+                            // knew an origin we never read.
+                            provenanceRow(icon: "questionmark.circle", title: "Unknown — no origin metadata",
+                                          detail: "No kMDItemWhereFroms or creator metadata was read for this file")
                         }
                         if let app = prov.matchedApp {
                             provenanceRow(icon: "app.fill", title: "Associated app: \(app)", detail: nil)

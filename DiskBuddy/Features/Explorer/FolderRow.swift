@@ -25,7 +25,13 @@ struct FolderRow: View {
                         .fontWeight(node.isDirectory ? .medium : .regular)
                         .lineLimit(1)
                         .foregroundStyle(node.name.hasPrefix(".") ? .secondary : .primary)
-                    if node.isSymlink {
+                    if node.isUnreadable {
+                        // WHY: this subtree could not be read (TCC denial) —
+                        // "0 B" here would present missing data as measured.
+                        Text("Permission denied")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    } else if node.isSymlink {
                         Text("Symbolic link")
                             .font(.caption2)
                             .foregroundStyle(.orange)
@@ -59,13 +65,23 @@ struct FolderRow: View {
                     }
                 }
                 .frame(width: 130, height: 9)
-                Text(String(format: "%.1f%%", node.percentageOfParent))
+                Text(node.isUnreadable ? "—" : String(format: "%.1f%%", node.percentageOfParent))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 48, alignment: .trailing)
-                Text(node.sizeFormatted)
-                    .font(.callout.weight(.medium).monospacedDigit())
-                    .frame(width: 82, alignment: .trailing)
+                if node.isUnreadable {
+                    // WHY: no size was measured for this row — a lock instead
+                    // of a number, so nothing reads as a confident 0 bytes.
+                    Image(systemName: "lock.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .frame(width: 82, alignment: .trailing)
+                        .help("Permission denied — size not measured")
+                } else {
+                    Text(node.sizeFormatted)
+                        .font(.callout.weight(.medium).monospacedDigit())
+                        .frame(width: 82, alignment: .trailing)
+                }
                 if isHovered {
                     Button(action: onInspect) {
                         Image(systemName: "info.circle")

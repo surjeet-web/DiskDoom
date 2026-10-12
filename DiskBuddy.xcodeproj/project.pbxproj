@@ -667,6 +667,14 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				// Ad-hoc-only machine (no Apple Development certificate). The
+				// hardened-runtime flag inherited from the shared xcconfig
+				// turns on library validation, which rejects loading the
+				// ad-hoc-signed test bundle into the ad-hoc runner with
+				// "mapping process and mapped file (non-platform) have
+				// different Team IDs". Test bundles don't ship; they only
+				// need to load.
+				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.diskdoom.DiskDoomUITests;
@@ -682,6 +690,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.diskdoom.DiskDoomUITests;

@@ -19,14 +19,13 @@ struct FileProvenance {
     let xattrNames: [String]
 
     enum CreationMethod: String {
-        case downloaded, appCreated, userCreated, systemGenerated, installerPlaced
+        // ONLY produced when real origin metadata was read (kMDItemWhereFroms,
+        // the com.apple.quarantine xattr, or kMDItemCreator) — see analyzeSync.
+        case downloaded, appCreated
         var label: String {
             switch self {
             case .downloaded: return "Downloaded"
             case .appCreated: return "Created by app"
-            case .userCreated: return "Created by user"
-            case .systemGenerated: return "System generated"
-            case .installerPlaced: return "Placed by installer"
             }
         }
 
@@ -34,9 +33,6 @@ struct FileProvenance {
             switch self {
             case .downloaded: return "arrow.down.circle.fill"
             case .appCreated: return "app.fill"
-            case .userCreated: return "person.fill"
-            case .systemGenerated: return "gear.circle.fill"
-            case .installerPlaced: return "shippingbox.fill"
             }
         }
     }
@@ -94,16 +90,18 @@ final class FileProvenanceEngine: ObservableObject, @unchecked Sendable {
 
         let method: FileProvenance.CreationMethod?
         if downloadSource != nil || quarantined {
+            // Evidence read: kMDItemWhereFroms URL(s) and/or the
+            // com.apple.quarantine xattr written by the downloader.
             method = .downloaded
         } else if creator != nil {
+            // Evidence read: kMDItemCreator metadata.
             method = .appCreated
-        } else if path.contains("/Library/Caches/") || path.contains("/Library/Logs/") {
-            method = .systemGenerated
-        } else if path.contains("/var/db/receipts/") {
-            method = .installerPlaced
-        } else if fm.fileExists(atPath: path) {
-            method = .userCreated
         } else {
+            // WHY: the old chain guessed `.userCreated` ("Created by user" —
+            // any file that merely exists) and classified caches/receipts as
+            // system/installer-made purely from the path. Without origin
+            // metadata every one of those was a fabrication, so report no
+            // method and let the view say "Unknown — no origin metadata".
             method = nil
         }
 

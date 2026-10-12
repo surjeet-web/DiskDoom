@@ -6,30 +6,50 @@ import AppKit
 struct TopSizesView: View {
     @EnvironmentObject var state: AppState
     @State private var limit = 50
+    // WHY memoized: `rows`/`matchingCount` used to walk the whole scan tree,
+    // filter, and sort inside `body`. @EnvironmentObject re-renders on EVERY
+    // AppState publish (scan-progress ticks, selection, banner timers), so a
+    // ~400k-node index cost hundreds of ms of main-actor work per render —
+    // multi-second stalls when renders landed back to back. The pass now runs
+    // only when `RowsKey` (every input to the derivation) changes.
+    @State private var memo = DerivationMemo<Rows>()
 
-    private var rows: [ScanNode] {
-        var all: [ScanNode] = []
-        func collect(_ node: ScanNode) {
-            all.append(node)
-            node.children.forEach(collect)
-        }
-        state.effectiveRoot.children.forEach(collect)
-        let q = state.searchText.lowercased()
-        let filtered = q.isEmpty ? all : all.filter { $0.name.lowercased().contains(q) }
-        return Array(filtered.sorted { $0.sizeBytes > $1.sizeBytes }.prefix(limit))
+    private struct Rows {
+        let rows: [ScanNode]
+        let matchingCount: Int
     }
+
+    /// Complete input set of the derivation: if none of these changed, the
+    /// displayed result cannot change either.
+    private struct RowsKey: Hashable {
+        let rootID: UUID? // a new scan / cached restore swaps the root
+        let recordsCount: Int // subtree expansion splices into the index
+        let searchText: String
+        let limit: Int
+    }
+
+    private var derived: Rows {
+        memo(key: RowsKey(rootID: state.scanRoot?.id,
+                          recordsCount: state.records.count,
+                          searchText: state.searchText,
+                          limit: limit)) {
+            var all: [ScanNode] = []
+            func collect(_ node: ScanNode) {
+                all.append(node)
+                node.children.forEach(collect)
+            }
+            state.effectiveRoot.children.forEach(collect)
+            let q = state.searchText.lowercased()
+            let filtered = q.isEmpty ? all : all.filter { $0.name.lowercased().contains(q) }
+            return Rows(rows: Array(filtered.sorted { $0.sizeBytes > $1.sizeBytes }.prefix(limit)),
+                        matchingCount: filtered.count)
+        }
+    }
+
+    private var rows: [ScanNode] { derived.rows }
 
     /// Total number of rows available before `limit` truncates (for "top N of M").
-    private var matchingCount: Int {
-        var all: [ScanNode] = []
-        func collect(_ node: ScanNode) {
-            all.append(node)
-            node.children.forEach(collect)
-        }
-        state.effectiveRoot.children.forEach(collect)
-        let q = state.searchText.lowercased()
-        return q.isEmpty ? all.count : all.filter { $0.name.lowercased().contains(q) }.count
-    }
+    private var matchingCount: Int { derived.matchingCount }
 
     /// Normalize bars against the largest *visible* row, not the whole disk:
     /// against the 1 TB root every real bar rounds to sub-pixel and the ranking
@@ -97,6 +117,27 @@ struct TopSizesView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(DesignTokens.Space.m)
+    }
+}
+
+/// Memoizes a whole-index derivation keyed by every input it reads.
+///
+/// WHY: without this, `body` re-ran the full walk/filter/sort pass on every
+/// AppState publish. At ~400k records each pass blocked the main actor for
+/// hundreds of milliseconds, so routine interaction (typing, selection,
+/// progress ticks) turned into multi-second main-thread stalls.
+@MainActor
+private final class DerivationMemo<Value> {
+    private var entry: (key: AnyHashable, value: Value)?
+
+    /// Returns the cached value when `key` is unchanged; otherwise runs
+    /// `compute` once and stores the result under the new key.
+    func callAsFunction<Key: Hashable>(key: Key, _ compute: () -> Value) -> Value {
+        let erased = AnyHashable(key)
+        if let entry, entry.key == erased { return entry.value }
+        let fresh = compute()
+        entry = (erased, fresh)
+        return fresh
     }
 }
 

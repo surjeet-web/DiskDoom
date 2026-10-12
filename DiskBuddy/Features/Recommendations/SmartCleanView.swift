@@ -55,8 +55,18 @@ struct SmartCleanView: View {
         VStack(spacing: 0) {
             if engine.quickCleanBytes > 0 {
                 HStack {
-                    Text("Quick Clean can free \(ByteFormatting.format(engine.quickCleanBytes))")
-                        .font(.headline)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Quick Clean can free \(ByteFormatting.format(engine.quickCleanBytes))")
+                            .font(.headline)
+                        // WHY: only the top paths each recommendation lists are
+                        // staged — state what is offered (and out of what) so
+                        // the headline can't promise un-actionable space.
+                        if engine.quickCleanPopulationBytes > engine.quickCleanBytes {
+                            Text("Showing top \(engine.quickCleanFileCount) files · \(ByteFormatting.format(engine.quickCleanBytes)) of \(ByteFormatting.format(engine.quickCleanPopulationBytes)) total")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     Button("Quick Clean") {
                         for rec in engine.recommendations where rec.confidence == .highlyRecommended {
@@ -86,7 +96,9 @@ struct SmartCleanView: View {
                                     .foregroundStyle(confidenceColor(rec.confidence))
                             }
                             Text(rec.detail).font(.callout).foregroundStyle(.secondary)
-                            Text("\(ByteFormatting.format(rec.bytes)) reclaimable · \(rec.paths.count) files")
+                            // WHY: only `rec.paths` can be staged, so the pair
+                            // must distinguish the offered subset from the rest.
+                            Text("\(ByteFormatting.format(rec.stageableBytes)) of \(ByteFormatting.format(rec.bytes)) reclaimable · top \(rec.paths.count) files shown")
                                 .font(.callout.monospacedDigit()).foregroundStyle(.green)
                             HStack {
                                 Spacer()

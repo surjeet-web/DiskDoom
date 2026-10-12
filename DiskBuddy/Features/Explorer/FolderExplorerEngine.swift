@@ -252,6 +252,11 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
         return "\(countText) · \(ByteFormatting.format(measurement.totalSize)) total · \(measurement.totalFileCount) files · \(measurement.totalFolderCount) folders"
     }
 
+    /// WHY: permission-denied subtrees contribute nothing to the total, so
+    /// the summary must be able to say the total is a lower bound instead
+    /// of presenting it as a complete measurement.
+    var unreadableFolderCount: Int { measurement?.unreadableFolderCount ?? 0 }
+
     var topExtensions: [String] {
         let counts = Dictionary(grouping: children.compactMap { $0.fileExtension?.lowercased() }, by: { $0 }).mapValues(\.count)
         return counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(5).map(\.key)
@@ -275,7 +280,8 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
                 isDirectory: child.isDirectory, isPackage: child.isPackage, isSymlink: child.isSymlink,
                 childCount: child.childCount, fileCount: child.fileCount,
                 modified: child.modified, fileExtension: child.fileExtension,
-                percentageOfParent: Double(child.size) / Double(total) * 100)
+                percentageOfParent: Double(child.size) / Double(total) * 100,
+                isUnreadable: child.isUnreadable)
         }
     }
 

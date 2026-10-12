@@ -19,6 +19,9 @@ import SQLite3
 // - actor isolation; ScanEngine never imports SQLite ✓ (it doesn't)
 // - failed writes never break scans (callers use try?) ✓
 // - delete/rebuild safe (deleteAllScans + deleteDatabaseFile) ✓
+// - retention: newest 5 scans / ≤14 days, pruned on save + load ✓
+//   (one scan writes ~166 MB of scan_files rows on a 400k-record index and
+//    nothing ever called deleteAllScans, so history grew without bound)
 // - apps/app_artifacts/query_results tables exist as reserved schemas.
 
 private let SQLITE_TRANSIENT_VALUE = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -187,6 +190,10 @@ actor ScanDatabase {
             try? exec("ROLLBACK")
             throw error
         }
+        // Retention on save, outside the transaction: a pruning failure must
+        // never roll back or mask the scan that was just written (callers
+        // treat any throw as "save failed"). The next save retries the prune.
+        try? pruneExpiredScans()
     }
 
     func storeHash(path: String, size: Int64, mtime: Date, sha256: String) throws {
@@ -222,8 +229,16 @@ actor ScanDatabase {
 
     func latestScan() throws -> CachedScan? {
         try open()
+        // Retention on load: an install that never scans again must not keep
+        // carrying dead scan blobs, and the rows read below must be ones that
+        // survived the prune (the newest scan is always exempt, so hydration
+        // in AppState.restoreCachedScan still finds a scan here).
+        try? pruneExpiredScans()
         var stmt: OpaquePointer?
-        let sql = "SELECT id, root_path, label, date, total_bytes, file_count, elapsed, tree_json FROM scans ORDER BY date DESC LIMIT 1"
+        // `id DESC` breaks same-second ties deterministically so this query
+        // and `pruneExpiredScans` agree on which scan is "the newest" —
+        // otherwise hydration could ask for a scan the prune just removed.
+        let sql = "SELECT id, root_path, label, date, total_bytes, file_count, elapsed, tree_json FROM scans ORDER BY date DESC, id DESC LIMIT 1"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
             throw ScanDatabaseError.prepareFailed(lastError())
         }
@@ -277,6 +292,55 @@ actor ScanDatabase {
                 category: category))
         }
         return records
+    }
+
+    // MARK: Retention (bounded disk growth)
+
+    /// Why this exists: each scan appends its full record set to `scan_files`
+    /// (~166 MB per scan on this machine's 4 scans → a 665 MB Cache.sqlite),
+    /// and `deleteAllScans()` has no callers — without a policy the database
+    /// grew by one whole scan's worth of rows for every scan, forever.
+    private static let maxRetainedScans = 5
+    /// Scans older than this are dropped even when they rank inside
+    /// `maxRetainedScans` — "5 most recent OR 14 days, whichever is fewer".
+    private static let maxScanAge: TimeInterval = 14 * 86_400
+
+    /// Keeps only the intersection of the two rules — the newest
+    /// `maxRetainedScans` scans AND those younger than `maxScanAge`, i.e.
+    /// "5 most recent OR 14 days, whichever is fewer" — except the single
+    /// newest scan, which is kept unconditionally: launch hydration reads it
+    /// and must never come back empty just because the user hasn't rescanned
+    /// in two weeks.
+    private func pruneExpiredScans() throws {
+        try open()
+        guard ((try? queryScalarInt("SELECT COUNT(*) FROM scans")) ?? 0) > 1 else { return }
+        let cutoff = Date().timeIntervalSince1970 - Self.maxScanAge
+        // `id DESC` is the deterministic same-second tiebreak (scans.date has
+        // one-second resolution); latestScan() uses the same order so both
+        // sides always agree on which row is "the newest".
+        let newest = "(SELECT id FROM scans ORDER BY date DESC, id DESC LIMIT 1)"
+        let top = "(SELECT id FROM scans ORDER BY date DESC, id DESC LIMIT \(Self.maxRetainedScans))"
+        let victims = """
+            SELECT id FROM scans
+            WHERE id <> \(newest)
+              AND (date < ? OR id NOT IN \(top))
+            """
+        try exec("BEGIN IMMEDIATE")
+        do {
+            // Blob rows first: both statements re-evaluate the same predicate
+            // against an unchanged `scans` table, so no scan_files rows are
+            // left behind for a scan this transaction deletes, and none are
+            // removed for a scan that survives.
+            try run("DELETE FROM scan_files WHERE scan_id IN (\(victims))", bind: { self.bindDouble($0, 1, cutoff) })
+            try run("DELETE FROM scans WHERE id IN (\(victims))", bind: { self.bindDouble($0, 1, cutoff) })
+            try exec("COMMIT")
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+        // No VACUUM on purpose: freed pages are reused by the next scan, so
+        // the file plateaus at the retained set's size instead of growing.
+        // VACUUM would rewrite the whole (multi-hundred-MB) file on the actor.
     }
 
     // MARK: Delete / rebuild (always safe)

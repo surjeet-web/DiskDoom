@@ -14,6 +14,9 @@ actor FolderMeasurementEngine {
         var totalSize: Int64 = 0
         var totalFileCount: Int = 0
         var totalFolderCount: Int = 0
+        /// WHY: without this, a permission-denied subtree returned an empty
+        /// accumulator and its 0 bytes were merged into a confident total.
+        var unreadableCount: Int = 0
     }
 
     private var cache: [FolderMeasurementCacheKey: FolderMeasurement] = [:]
@@ -95,6 +98,7 @@ actor FolderMeasurementEngine {
         var totalSize: Int64 = 0
         var totalFiles = 0
         var totalFolders = 0
+        var totalUnreadable = 0
         var children: [FolderChild] = []
 
         let contents: [URL]
@@ -110,19 +114,30 @@ actor FolderMeasurementEngine {
 
         for childURL in contents {
             try Task.checkCancellation()
+            let childPath = childURL.standardizedFileURL.path
+            let ext = childURL.pathExtension
+            let extensionValue: String? = ext.isEmpty ? nil : ext
             let values: URLResourceValues
             do {
                 values = try childURL.resourceValues(forKeys: keys)
             } catch {
+                // WHY: metadata for this child could not be read (permission
+                // denied or it vanished mid-walk). Dropping the row entirely
+                // hid the gap and let the parent total claim completeness —
+                // keep a row so it renders a lock + "Permission denied".
+                totalUnreadable += 1
+                children.append(FolderChild(
+                    path: childPath, name: childURL.lastPathComponent, size: 0,
+                    isDirectory: false, isPackage: false, isSymlink: false,
+                    fileCount: nil, folderCount: nil, childCount: nil,
+                    modified: nil, fileExtension: extensionValue,
+                    isUnreadable: true))
                 continue
             }
             let childIsDirectory = values.isDirectory ?? false
             let childIsSymlink = values.isSymbolicLink ?? false
             let childIsPackage = values.isPackage ?? false
-            let childPath = childURL.standardizedFileURL.path
             let childName = values.name ?? childURL.lastPathComponent
-            let ext = childURL.pathExtension
-            let extensionValue: String? = ext.isEmpty ? nil : ext
 
             if childIsSymlink {
                 let size = max(0, Int64(values.fileSize ?? 0))
@@ -141,6 +156,7 @@ actor FolderMeasurementEngine {
                 totalSize += result.totalSize
                 totalFiles += result.totalFileCount
                 totalFolders += result.totalFolderCount + 1
+                totalUnreadable += result.unreadableCount
                 let immediate = (try? fm.contentsOfDirectory(
                     at: childURL, includingPropertiesForKeys: nil,
                     options: includeHidden ? [] : [.skipsHiddenFiles]))?.count
@@ -149,7 +165,10 @@ actor FolderMeasurementEngine {
                     isDirectory: true, isPackage: false, isSymlink: false,
                     fileCount: result.totalFileCount, folderCount: result.totalFolderCount,
                     childCount: immediate,
-                    modified: values.contentModificationDate, fileExtension: extensionValue))
+                    modified: values.contentModificationDate, fileExtension: extensionValue,
+                    // WHY: nothing inside was readable, so the 0 bytes above are
+                    // an absence of data, not a measurement — the row must say so.
+                    isUnreadable: result.unreadableCount > 0 && result.totalSize == 0))
             } else {
                 let size = max(0, Int64(values.totalFileSize ?? values.fileSize ?? 0))
                 totalSize += size
@@ -171,7 +190,8 @@ actor FolderMeasurementEngine {
             path: path, totalSize: totalSize, totalFileCount: totalFiles,
             totalFolderCount: totalFolders, children: children, measuredAt: Date(),
             includesHidden: includeHidden,
-            measurementVersion: FolderMeasurement.currentMeasurementVersion)
+            measurementVersion: FolderMeasurement.currentMeasurementVersion,
+            unreadableFolderCount: totalUnreadable)
     }
 
     private static func measureDirectoryRecursively(rootURL: URL, includeHidden: Bool, resourceKeys: Set<URLResourceKey>) -> DirectoryAccumulator {
@@ -180,11 +200,24 @@ actor FolderMeasurementEngine {
         guard let contents = try? fm.contentsOfDirectory(
             at: rootURL, includingPropertiesForKeys: Array(resourceKeys),
             options: includeHidden ? [] : [.skipsHiddenFiles])
-        else { return accumulator }
+        else {
+            // WHY: enumeration failed (typically TCC: ~/Library/Mail without
+            // Full Disk Access). Returning a 0-byte accumulator here made the
+            // unreadable folder look measured at exactly 0 and the total look
+            // complete — count it so the UI can label the total a lower bound.
+            accumulator.unreadableCount += 1
+            return accumulator
+        }
 
         for url in contents {
             if Task.isCancelled { break }
-            guard let values = try? url.resourceValues(forKeys: resourceKeys) else { continue }
+            guard let values = try? url.resourceValues(forKeys: resourceKeys) else {
+                // WHY: this child's metadata is unreadable — skipping it with
+                // `continue` silently dropped its bytes from the total. Count
+                // it (the row is rendered with a lock instead of a size).
+                accumulator.unreadableCount += 1
+                continue
+            }
             let isDirectory = values.isDirectory ?? false
             let isSymlink = values.isSymbolicLink ?? false
             let isPackage = values.isPackage ?? false
@@ -198,6 +231,7 @@ actor FolderMeasurementEngine {
                 accumulator.totalSize += nested.totalSize
                 accumulator.totalFileCount += nested.totalFileCount
                 accumulator.totalFolderCount += nested.totalFolderCount + 1
+                accumulator.unreadableCount += nested.unreadableCount
             } else {
                 accumulator.totalSize += max(0, Int64(values.totalFileSize ?? values.fileSize ?? 0))
                 accumulator.totalFileCount += 1

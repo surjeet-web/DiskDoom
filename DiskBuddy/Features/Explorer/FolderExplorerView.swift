@@ -137,6 +137,15 @@ struct FolderExplorerView: View {
             Text(engine.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // WHY: unreadable (permission-denied) folders contribute 0 bytes,
+            // so the total above is only a lower bound — say so instead of
+            // letting it read as a complete measurement.
+            if engine.unreadableFolderCount > 0 {
+                Text("· \(engine.unreadableFolderCount) folders unreadable")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .help("Permission denied — these folders contribute no bytes, so the total is a lower bound")
+            }
             Spacer()
             if !engine.topExtensions.isEmpty {
                 HStack(spacing: 4) {

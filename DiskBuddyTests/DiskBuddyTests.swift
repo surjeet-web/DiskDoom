@@ -341,7 +341,7 @@ struct MenuBarMonitorTests {
             AppEntry(name: "StaleApp", bundleID: "com.stale", bundlePath: "",
                      version: "1", bundleBytes: 8_000_000_000, artifacts: [], installDate: nil, isStale: true), // stale, skipped
         ]
-        monitor.updateFromScan(records: records, apps: apps, litterScore: 42, healthGrade: "B")
+        monitor.updateFromScan(records: records, apps: apps, litterScore: 42, healthGrade: "B", scanDate: Date())
 
         #expect(monitor.topSpaceHogs.count == 3, "two files above the 100MB cutoff + one app")
         #expect(monitor.topSpaceHogs[0].size == 3_000_000_000, "sorted by size descending (3GB > 2GB > 500MB)")

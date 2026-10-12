@@ -9,3 +9,5 @@ build/
 *.dSYM
 *.pem
 Sparkle/PrivKeys/
+*.profraw
+*.profdata

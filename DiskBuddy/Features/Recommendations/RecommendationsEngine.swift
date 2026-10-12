@@ -13,6 +13,11 @@ struct Recommendation: Identifiable {
     enum Confidence: String {
         case highlyRecommended, recommended, consider
     }
+
+    /// Bytes the user can actually act on: only the listed `paths` are
+    /// offered for staging. WHY: `bytes` covers the whole population, so a
+    /// headline built from it promised space no button could free.
+    var stageableBytes: Int64 { paths.reduce(0) { $0 + $1.bytes } }
 }
 
 final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
@@ -65,7 +70,11 @@ final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
         if !stale.isEmpty {
             recs.append(Recommendation(
                 title: "Remove stale files from uninstalled apps",
-                detail: "\(stale.count.formatted()) orphaned files can never be used again.",
+                // WHY: "can never be used again" asserted something nobody
+                // verified — these files belong to apps that are no longer
+                // installed here, so they are *normally* safe to remove, but
+                // the user should check before staging them.
+                detail: "\(stale.count.formatted()) files left behind by apps that are no longer installed — normally safe to remove, but verify first.",
                 bytes: staleBytes,
                 confidence: .highlyRecommended,
                 paths: Self.topPaths(stale, limit: 50)))
@@ -108,7 +117,26 @@ final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
         records.prefix(limit).map { ($0.path, $0.bytes) }
     }
 
+    /// Bytes the Quick Clean button can actually stage. WHY: each
+    /// recommendation only lists its top paths, so summing `bytes` (the whole
+    /// population) told the user they could free far more than the button
+    /// would ever stage — the headline now matches the action.
     var quickCleanBytes: Int64 {
-        recommendations.filter { $0.confidence == .highlyRecommended }.reduce(0) { $0 + $1.bytes }
+        highlyRecommended.reduce(0) { $0 + $1.stageableBytes }
+    }
+
+    /// The population the offered (top-N) paths were cut from, for an
+    /// honest "X of Y total" next to the stageable figure.
+    var quickCleanPopulationBytes: Int64 {
+        highlyRecommended.reduce(0) { $0 + $1.bytes }
+    }
+
+    /// Files Quick Clean will actually stage (the shown/offered set).
+    var quickCleanFileCount: Int {
+        highlyRecommended.reduce(0) { $0 + $1.paths.count }
+    }
+
+    private var highlyRecommended: [Recommendation] {
+        recommendations.filter { $0.confidence == .highlyRecommended }
     }
 }

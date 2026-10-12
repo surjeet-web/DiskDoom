@@ -87,33 +87,43 @@ struct DiskDoomApp: App {
                         // usage snapshot (with category breakdown) for the
                         // forecast history.
                         guard root != nil else { return }
-                        menuBarMonitor.updateFromScan(
-                            records: state.records,
-                            apps: inventory.apps,
-                            litterScore: litterEngine.entries.isEmpty ? nil : litterEngine.averageScore,
-                            healthGrade: healthEngine.score?.grade)
-                        // Forecast: category breakdown from the fresh records.
-                        var breakdown: [String: Int64] = [:]
-                        for record in state.records where !record.isDirectory {
-                            breakdown[record.category.rawValue, default: 0] += record.bytes
+                        // WHY: `$scanRoot` publishes in the MIDDLE of AppState's
+                        // assignment — `records`/`lastScanDate` are set on the
+                        // following lines of a fresh scan, and after `scanRoot`
+                        // for a launch-time cache restore. Reading them here
+                        // stamped the menu bar with the wrong date (a week-old
+                        // cached tree got "· 2 minutes ago"). Defer one turn so
+                        // the real scan date is visible to every reader below.
+                        Task { @MainActor in
+                            menuBarMonitor.updateFromScan(
+                                records: state.records,
+                                apps: inventory.apps,
+                                litterScore: litterEngine.entries.isEmpty ? nil : litterEngine.averageScore,
+                                healthGrade: healthEngine.score?.grade,
+                                scanDate: state.lastScanDate)
+                            // Forecast: category breakdown from the fresh records.
+                            var breakdown: [String: Int64] = [:]
+                            for record in state.records where !record.isDirectory {
+                                breakdown[record.category.rawValue, default: 0] += record.bytes
+                            }
+                            if let v = try? URL(fileURLWithPath: "/").resourceValues(
+                                forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
+                               let total = v.volumeTotalCapacity {
+                                let free = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
+                                let capacity = Int64(total)
+                                forecastEngine.recordSnapshot(
+                                    totalCapacity: capacity, usedSize: capacity - free, freeSize: free,
+                                    categoryBreakdown: breakdown, source: .scan)
+                                Task { await forecastEngine.compute() }
+                            }
+                            // Desktop widget: refresh the shared snapshot.
+                            WidgetDataBridge.write(
+                                healthGrade: healthEngine.score?.grade,
+                                lastScanDate: state.lastScanDate,
+                                daysUntilFull: forecastEngine.forecast?.daysUntilFull,
+                                topHogs: menuBarMonitor.topSpaceHogs.map { ($0.name, $0.size) })
+                            WidgetCenter.shared.reloadAllTimelines()
                         }
-                        if let v = try? URL(fileURLWithPath: "/").resourceValues(
-                            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
-                           let total = v.volumeTotalCapacity {
-                            let free = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
-                            let capacity = Int64(total)
-                            forecastEngine.recordSnapshot(
-                                totalCapacity: capacity, usedSize: capacity - free, freeSize: free,
-                                categoryBreakdown: breakdown, source: .scan)
-                            Task { await forecastEngine.compute() }
-                        }
-                        // Desktop widget: refresh the shared snapshot.
-                        WidgetDataBridge.write(
-                            healthGrade: healthEngine.score?.grade,
-                            lastScanDate: state.lastScanDate,
-                            daysUntilFull: forecastEngine.forecast?.daysUntilFull,
-                            topHogs: menuBarMonitor.topSpaceHogs.map { ($0.name, $0.size) })
-                        WidgetCenter.shared.reloadAllTimelines()
                     }
                     .onReceive(state.dupFinder.$sets) { sets in
                         // Duplicate results landed → publish the index the
@@ -128,7 +138,9 @@ struct DiskDoomApp: App {
                             records: state.records,
                             apps: apps,
                             litterScore: litterEngine.entries.isEmpty ? nil : litterEngine.averageScore,
-                            healthGrade: healthEngine.score?.grade)
+                            healthGrade: healthEngine.score?.grade,
+                            // Real scan timestamp (nil until one has run) — never `Date()`.
+                            scanDate: state.lastScanDate)
                     }
                 if showSplash {
                     SplashScreen { showSplash = false }

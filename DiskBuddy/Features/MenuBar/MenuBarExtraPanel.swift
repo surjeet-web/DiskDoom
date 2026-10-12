@@ -135,11 +135,7 @@ struct MenuBarExtraPanel: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let date = monitor.lastScanDate {
-                    Text(date.formatted(.relative(presentation: .named)))
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                }
+                scanDateLabel
             }
             .padding(.horizontal, DesignTokens.Space.m)
             .padding(.top, DesignTokens.Space.s)
@@ -171,6 +167,35 @@ struct MenuBarExtraPanel: View {
                 .help(hog.path)
             }
             .padding(.bottom, DesignTokens.Space.s)
+        }
+    }
+
+    // MARK: - Scan freshness
+
+    /// WHY: the hogs above come from whichever scan produced them — possibly
+    /// a cached snapshot restored at launch — so this must show the scan's
+    /// real timestamp, not a relative "2 minutes ago" stamped when the
+    /// monitor was last refreshed.
+    @ViewBuilder
+    private var scanDateLabel: some View {
+        if let date = monitor.lastScanDate {
+            if Date().timeIntervalSince(date) > 86_400 {
+                // Older than 24 h: staleness must be visible at a glance.
+                Text("Data from \(date.formatted(.relative(presentation: .named))) — rescan to refresh")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .help("Scanned \(date.formatted(date: .abbreviated, time: .shortened)) — these sizes may be out of date")
+            } else {
+                Text("Data from \(date.formatted(.relative(presentation: .named)))")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .help("Scanned \(date.formatted(date: .abbreviated, time: .shortened))")
+            }
+        } else {
+            Text("no scan yet")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .help("No scan has run yet — no scan date to show")
         }
     }
 

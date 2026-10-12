@@ -13,6 +13,12 @@ struct FolderMeasurement: Sendable, Codable, Hashable {
     let includesHidden: Bool
     let measurementVersion: Int
 
+    /// WHY: a TCC-protected subtree (e.g. `~/Library/Mail` without Full Disk
+    /// Access) used to contribute 0 bytes that merged silently into a
+    /// confident total. Counted so the summary can say "· N folders
+    /// unreadable" and the total reads as a lower bound, not a measurement.
+    var unreadableFolderCount: Int = 0
+
     static let currentMeasurementVersion = 1
 }
 
@@ -32,6 +38,11 @@ struct FolderChild: Identifiable, Sendable, Codable, Hashable {
 
     let modified: Date?
     let fileExtension: String?
+
+    /// WHY: an unreadable child (permission denied) used to be summed as
+    /// 0 bytes as if measured — the row must render a lock + "Permission
+    /// denied" instead of a size.
+    var isUnreadable: Bool = false
 }
 
 struct FolderMeasurementCacheKey: Hashable, Sendable {

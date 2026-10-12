@@ -5,6 +5,13 @@ import SwiftUI
 struct ExtCloudView: View {
     @EnvironmentObject var state: AppState
     @State private var selectedExt: String? = nil
+    // WHY memoized: `groups` and `topFiles` aggregated the whole ~400k-record
+    // index inside `body`, which reruns on every AppState publish (progress
+    // ticks, selection, banner timers) — hundreds of ms of main-actor work per
+    // render, i.e. multi-second main-thread stalls when renders land back to
+    // back. Each pass now runs only when its key (every input) changes.
+    @State private var groupsMemo = DerivationMemo<[ExtGroup]>()
+    @State private var topFilesMemo = DerivationMemo<[ScannedRecord]>()
 
     private struct ExtGroup: Identifiable {
         var id: String { ext }
@@ -13,15 +20,33 @@ struct ExtCloudView: View {
         let files: Int
     }
 
+    /// Complete input set of a records-derived pass. `records` is only ever
+    /// replaced wholesale (a new scan or a cached restore — both bump
+    /// `lastScanDate`) or appended to (count changes), so this key changes
+    /// exactly when the data behind the pass can change.
+    private struct RecordsKey: Hashable {
+        let recordsCount: Int
+        let scanDate: Date?
+    }
+
+    /// `topFiles` additionally depends on which kind is selected.
+    private struct TopFilesKey: Hashable {
+        let recordsCount: Int
+        let scanDate: Date?
+        let ext: String
+    }
+
     private var groups: [ExtGroup] {
-        var totals: [String: (bytes: Int64, files: Int)] = [:]
-        for record in state.records where !record.isDirectory {
-            let ext = (record.path as NSString).pathExtension.lowercased()
-            let key = ext.isEmpty ? "(no extension)" : ".\(ext)"
-            totals[key, default: (0, 0)] = (totals[key]?.bytes ?? 0 + record.bytes, totals[key]?.files ?? 0 + 1)
+        groupsMemo(key: RecordsKey(recordsCount: state.records.count, scanDate: state.lastScanDate)) {
+            var totals: [String: (bytes: Int64, files: Int)] = [:]
+            for record in state.records where !record.isDirectory {
+                let ext = (record.path as NSString).pathExtension.lowercased()
+                let key = ext.isEmpty ? "(no extension)" : ".\(ext)"
+                totals[key, default: (0, 0)] = (totals[key]?.bytes ?? 0 + record.bytes, totals[key]?.files ?? 0 + 1)
+            }
+            return totals.map { ExtGroup(ext: $0.key, bytes: $0.value.bytes, files: $0.value.files) }
+                .sorted { $0.bytes > $1.bytes }
         }
-        return totals.map { ExtGroup(ext: $0.key, bytes: $0.value.bytes, files: $0.value.files) }
-            .sorted { $0.bytes > $1.bytes }
     }
 
     // NaN guard: a scan can index many zero-byte files, making `first?.bytes` 0
@@ -108,11 +133,34 @@ struct ExtCloudView: View {
     }
 
     private func topFiles(ext: String) -> [ScannedRecord] {
-        state.records
-            .filter {
-                !$0.isDirectory && ((($0.path as NSString).pathExtension.lowercased().isEmpty ? "(no extension)" : ".\(($0.path as NSString).pathExtension.lowercased())") == ext)
-            }
-            .sorted { $0.bytes > $1.bytes }
+        topFilesMemo(key: TopFilesKey(recordsCount: state.records.count, scanDate: state.lastScanDate, ext: ext)) {
+            state.records
+                .filter {
+                    !$0.isDirectory && ((($0.path as NSString).pathExtension.lowercased().isEmpty ? "(no extension)" : ".\(($0.path as NSString).pathExtension.lowercased())") == ext)
+                }
+                .sorted { $0.bytes > $1.bytes }
+        }
+    }
+}
+
+/// Memoizes a whole-index derivation keyed by every input it reads.
+///
+/// WHY: without this, `body` re-ran the full aggregate/filter/sort pass on
+/// every AppState publish. At ~400k records each pass blocked the main actor
+/// for hundreds of milliseconds, so routine interaction (typing, selection,
+/// progress ticks) turned into multi-second main-thread stalls.
+@MainActor
+private final class DerivationMemo<Value> {
+    private var entry: (key: AnyHashable, value: Value)?
+
+    /// Returns the cached value when `key` is unchanged; otherwise runs
+    /// `compute` once and stores the result under the new key.
+    func callAsFunction<Key: Hashable>(key: Key, _ compute: () -> Value) -> Value {
+        let erased = AnyHashable(key)
+        if let entry, entry.key == erased { return entry.value }
+        let fresh = compute()
+        entry = (erased, fresh)
+        return fresh
     }
 }
 
