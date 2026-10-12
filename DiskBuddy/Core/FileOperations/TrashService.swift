@@ -15,6 +15,36 @@ struct TrashResult {
 }
 
 enum TrashService {
+    /// Paths this tool will never move to the Trash. Enforced here as the
+    /// final backstop — `AppState.stage` also checks, but any future caller
+    /// that bypasses staging must still be blocked.
+    private static let deniedPrefixes = [
+        "/System", "/usr", "/bin", "/sbin", "/dev", "/cores", "/opt",
+        "/private/var/db", "/private/var/folders/", "/private/etc",
+        "/Library/Extensions", "/Library/LaunchDaemons", "/Library/LaunchAgents",
+        "/Library/Keychains", "/Library/Preferences/.GlobalPreferences",
+    ]
+
+    private static let deniedExact: Set<String> = [
+        "/", "/System", "/Library", "/Applications", "/Users", "/private",
+        "/opt", "/usr", "/bin", "/sbin", "/dev", "/cores", "/Volumes",
+        "/Network", "/home", "/var",
+    ]
+
+    /// Returns a refusal reason, or nil when the path is allowed.
+    static func deletionRefusal(for path: String) -> String? {
+        let p = (path as NSString).expandingTildeInPath
+        if deniedExact.contains(p) { return "system directory" }
+        for prefix in deniedPrefixes where p == prefix || p.hasPrefix(prefix + "/") {
+            return "protected system path"
+        }
+        let own = Bundle.main.bundlePath
+        if !own.isEmpty, p == own || p.hasPrefix(own + "/") {
+            return "this is DiskDoom itself"
+        }
+        return nil
+    }
+
     /// Moves paths to Trash one by one. Never deletes permanently.
     /// Returns what succeeded plus per-item failure reasons (in use,
     /// permissions, missing, …) for the §31C report + retry.
@@ -24,11 +54,23 @@ enum TrashService {
         var okCount = 0
         var failures: [TrashFailure] = []
         for item in paths {
-            let url = URL(fileURLWithPath: (item.path as NSString).expandingTildeInPath)
+            let expandedPath = (item.path as NSString).expandingTildeInPath
+            guard expandedPath.hasPrefix("/"), fm.fileExists(atPath: expandedPath) else {
+                failures.append(TrashFailure(path: item.path, bytes: item.bytes, reason: "File no longer exists"))
+                continue
+            }
+            // Refuse protected/system paths even if they were somehow queued.
+            if let refusal = deletionRefusal(for: expandedPath) {
+                failures.append(TrashFailure(path: item.path, bytes: item.bytes,
+                                             reason: "Refused — \(refusal)"))
+                continue
+            }
+            let url = URL(fileURLWithPath: expandedPath)
             do {
                 var resultingURL: NSURL?
                 try fm.trashItem(at: url, resultingItemURL: &resultingURL)
-                okBytes += item.bytes
+                let (sum, overflow) = okBytes.addingReportingOverflow(item.bytes)
+                okBytes = overflow ? Int64.max : sum
                 okCount += 1
             } catch let error as NSError {
                 failures.append(TrashFailure(path: item.path, bytes: item.bytes, reason: humanReason(error)))

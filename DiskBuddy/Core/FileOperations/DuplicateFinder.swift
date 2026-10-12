@@ -10,6 +10,9 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
     @Published private(set) var progress: Double = 0
     @Published private(set) var sets: [DuplicateSet] = []
     @Published private(set) var isRunning = false
+    /// Threshold of the last completed run — lets views avoid re-hashing
+    /// the same data on every tab visit.
+    @Published private(set) var lastRunMinBytes: Int64 = -1
     private var task: Task<Void, Never>?
 
     func find(in records: [ScannedRecord], minBytes: Int64) {
@@ -17,9 +20,12 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
         task = Task { [weak self] in
             guard let self else { return }
             await MainActor.run { self.isRunning = true; self.sets = []; self.progress = 0 }
-            let found = await Self.findAsync(records: records, minBytes: minBytes) { fraction in
-                await MainActor.run { self.progress = fraction }
+            let found = await PerformanceMonitor.measure("DuplicateFinder.hash", threshold: 5) {
+                await Self.findAsync(records: records, minBytes: minBytes) { fraction in
+                    await MainActor.run { self.progress = fraction }
+                }
             }
+            PerformanceMonitor.checkMemory(label: "DuplicateFinder after hashing")
             guard !Task.isCancelled else {
                 await MainActor.run { self.isRunning = false }
                 return
@@ -28,6 +34,7 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
                 self.sets = found
                 self.isRunning = false
                 self.progress = 1
+                self.lastRunMinBytes = minBytes
             }
         }
     }

@@ -57,31 +57,83 @@ enum MockDuplicates {
 
 // MARK: Applications (§16)
 
-struct AppEntry: Identifiable, Hashable {
-    let id = UUID()
+struct AppEntry: Identifiable, Hashable, Codable {
+    let id: UUID
     let name: String
     let bundleID: String
+    let bundlePath: String // "" for stale entries (no bundle on disk)
+    let version: String
     let bundleBytes: Int64
-    let artifactBytes: Int64
-    let symbol: String
-    let tint: Color
+    let artifacts: [AppArtifactInfo]
+    let installDate: Date?
     let isStale: Bool
-    let installedDaysAgo: Int
 
+    var artifactBytes: Int64 { artifacts.reduce(0) { $0 + $1.bytes } }
     var totalBytes: Int64 { bundleBytes + artifactBytes }
+    var installedDaysAgo: Int? {
+        installDate.map { max(0, Int(Date().timeIntervalSince($0) / 86_400)) }
+    }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
-    static func == (l: AppEntry, r: AppEntry) -> Bool { l.id == r.id }
+    static func == (l: AppEntry, r: AppEntry) { l.id == r.id }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, bundleID, bundlePath, version, bundleBytes, artifacts, installDate, isStale
+    }
+    init(name: String, bundleID: String, bundlePath: String, version: String,
+         bundleBytes: Int64, artifacts: [AppArtifactInfo], installDate: Date?, isStale: Bool) {
+        self.id = UUID()
+        self.name = name
+        self.bundleID = bundleID
+        self.bundlePath = bundlePath
+        self.version = version
+        self.bundleBytes = bundleBytes
+        self.artifacts = artifacts
+        self.installDate = installDate
+        self.isStale = isStale
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        bundleID = try c.decode(String.self, forKey: .bundleID)
+        bundlePath = try c.decode(String.self, forKey: .bundlePath)
+        version = try c.decode(String.self, forKey: .version)
+        bundleBytes = try c.decode(Int64.self, forKey: .bundleBytes)
+        artifacts = try c.decode([AppArtifactInfo].self, forKey: .artifacts)
+        installDate = try c.decodeIfPresent(Date.self, forKey: .installDate)
+        isStale = try c.decode(Bool.self, forKey: .isStale)
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(bundleID, forKey: .bundleID)
+        try c.encode(bundlePath, forKey: .bundlePath)
+        try c.encode(version, forKey: .version)
+        try c.encode(bundleBytes, forKey: .bundleBytes)
+        try c.encode(artifacts, forKey: .artifacts)
+        try c.encodeIfPresent(installDate, forKey: .installDate)
+        try c.encode(isStale, forKey: .isStale)
+    }
 }
 
 enum MockApps {
+    // Pre-inventory fallback so the tab is never blank (replaced by real data).
     static let all: [AppEntry] = [
-        AppEntry(name: "Google Chrome", bundleID: "com.google.Chrome", bundleBytes: Int64(4.1 * Double(GB)), artifactBytes: Int64(8.3 * Double(GB)), symbol: "globe", tint: .blue, isStale: false, installedDaysAgo: 400),
-        AppEntry(name: "Xcode", bundleID: "com.apple.dt.Xcode", bundleBytes: Int64(5.1 * Double(GB)), artifactBytes: Int64(3.1 * Double(GB)), symbol: "hammer.fill", tint: .blue, isStale: false, installedDaysAgo: 200),
-        AppEntry(name: "Slack", bundleID: "com.tinyspeck.slackmacgap", bundleBytes: Int64(1.2 * Double(GB)), artifactBytes: Int64(3.9 * Double(GB)), symbol: "message.fill", tint: .green, isStale: false, installedDaysAgo: 300),
-        AppEntry(name: "Figma", bundleID: "com.figma.Desktop", bundleBytes: Int64(0.9 * Double(GB)), artifactBytes: Int64(3.4 * Double(GB)), symbol: "paintbrush.fill", tint: .purple, isStale: false, installedDaysAgo: 120),
-        AppEntry(name: "Spotify", bundleID: "com.spotify.client", bundleBytes: Int64(0.7 * Double(GB)), artifactBytes: Int64(3.4 * Double(GB)), symbol: "music.note", tint: .green, isStale: false, installedDaysAgo: 500),
-        AppEntry(name: "Old VPN Client", bundleID: "com.oldvpn.client", bundleBytes: 0, artifactBytes: 420 * MB, symbol: "lock.fill", tint: .gray, isStale: true, installedDaysAgo: 900),
-        AppEntry(name: "Beta Editor", bundleID: "com.beta.editor", bundleBytes: 0, artifactBytes: 180 * MB, symbol: "pencil", tint: .gray, isStale: true, installedDaysAgo: 700),
+        AppEntry(
+            name: "Google Chrome", bundleID: "com.google.Chrome", bundlePath: "/Applications/Google Chrome.app",
+            version: "124.0", bundleBytes: Int64(4.1 * Double(GB)),
+            artifacts: [
+                AppArtifactInfo(path: "~/Library/Caches/com.google.Chrome", bytes: Int64(5.2 * Double(GB)), kind: "Caches"),
+                AppArtifactInfo(path: "~/Library/HTTPStorages/com.google.Chrome", bytes: Int64(2.1 * Double(GB)), kind: "HTTPStorages"),
+                AppArtifactInfo(path: "~/Library/Application Support/Google/Chrome", bytes: 600_000_000, kind: "Application Support"),
+                AppArtifactInfo(path: "~/Library/Saved Application State/com.google.Chrome.savedState", bytes: 200_000_000, kind: "Saved State"),
+                AppArtifactInfo(path: "~/Library/Preferences/com.google.Chrome.plist", bytes: 12_000, kind: "Preferences"),
+                AppArtifactInfo(path: "~/Library/WebKit/com.google.Chrome", bytes: 100_000_000, kind: "WebKit"),
+                AppArtifactInfo(path: "~/Library/LaunchAgents/com.google.keystone.agent.plist", bytes: 4_000, kind: "Launch Agent"),
+                AppArtifactInfo(path: "~/Library/Logs/GoogleSoftwareUpdate", bytes: 8_000, kind: "Logs"),
+            ],
+            installDate: Calendar.current.date(byAdding: .day, value: -400, to: Date()), isStale: false),
     ]
 }
 

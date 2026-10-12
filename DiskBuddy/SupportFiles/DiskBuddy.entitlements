@@ -2,5 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- App Group (group.com.diskdoom) goes here once you add an Apple
+	     Development signing certificate in Xcode → Signing & Capabilities.
+	     Ad-hoc local builds can't use app groups; the widget falls back to
+	     live volume capacity and the app writes to the group container path
+	     directly (it is not sandboxed). -->
 </dict>
 </plist>

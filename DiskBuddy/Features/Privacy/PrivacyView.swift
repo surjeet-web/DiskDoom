@@ -32,7 +32,16 @@ struct PrivacyView: View {
                 ProgressView("Scanning for tracking data…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if engine.findings.isEmpty {
-                EmptyState(symbol: "lock.shield.fill", title: "No tracking data detected", message: "Run a scan to look for ad, analytics, and crash SDK caches.", actionTitle: "Scan", action: { engine.scan() })
+                EmptyState(
+                    symbol: engine.unreadableLocationCount > 0 ? "lock.trianglebadge.exclamationmark" : "lock.shield.fill",
+                    title: engine.unreadableLocationCount > 0
+                        ? "Couldn't complete the scan"
+                        : "No tracking SDK caches found",
+                    message: engine.unreadableLocationCount > 0
+                        ? "\(engine.unreadableLocationCount) of the 4 library locations couldn't be read. Grant Full Disk Access for a complete result."
+                        : "Scanned Caches, Application Support, Containers and Group Containers — no ad, analytics or crash SDK caches present.",
+                    actionTitle: engine.unreadableLocationCount > 0 ? "Retry" : "Scan",
+                    action: { engine.scan() })
             } else {
                 HStack(spacing: DesignTokens.Space.xl) {
                     Text("\(engine.findings.count) findings").font(.headline)
@@ -41,6 +50,14 @@ struct PrivacyView: View {
                 }
                 .padding(.horizontal, DesignTokens.Space.m)
                 .padding(.vertical, DesignTokens.Space.s)
+                if engine.unreadableLocationCount > 0 {
+                    Label("\(engine.unreadableLocationCount) location(s) unreadable — result is incomplete",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, DesignTokens.Space.m)
+                        .padding(.bottom, DesignTokens.Space.s)
+                }
                 List {
                     ForEach(grouped, id: \.0) { category, findings in
                         Section {

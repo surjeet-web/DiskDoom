@@ -58,7 +58,9 @@ struct IcicleView: View {
                                 }
                             }
                         }
-                        .frame(height: (proxy.size.height - CGFloat(layers.count - 1) * 3) / CGFloat(layers.count))
+                        // max(10, ...): on a short window the raw quotient goes
+                        // negative and SwiftUI traps on the negative frame height.
+                        .frame(height: max(10, (proxy.size.height - CGFloat(layers.count - 1) * 3) / CGFloat(layers.count)))
                     }
                 }
             }

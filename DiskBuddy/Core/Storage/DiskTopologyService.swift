@@ -324,8 +324,14 @@ final class DiskTopologyService: ObservableObject, @unchecked Sendable {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
+            // Drain the pipe BEFORE waiting. The kernel pipe buffer is 64 KB;
+            // if the child writes more than that it blocks on write, and
+            // `waitUntilExit()` then blocks forever — a permanent deadlock.
+            // `diskutil apfs list -plist` exceeds 64 KB on any multi-volume
+            // Mac, which hung the whole launch sequence.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            return String(data: data, encoding: .utf8) ?? ""
         } catch {
             return ""
         }

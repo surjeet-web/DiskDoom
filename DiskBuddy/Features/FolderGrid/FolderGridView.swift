@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - §12 Explore: Folder Grid (LazyVGrid prototype, mock data)
 
@@ -22,48 +23,48 @@ struct FolderGridView: View {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180))], spacing: DesignTokens.Space.m) {
                     ForEach(cells, id: \.id) { node in
-                        Button {
-                            state.selectedNode = node
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Image(systemName: node.category.symbol)
-                                        .font(.title2)
-                                        .foregroundStyle(node.category.color)
-                                    Spacer()
-                                    if !node.children.isEmpty {
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption)
-                                            .foregroundStyle(.tertiary)
-                                    }
+                        // Not a Button: a Button swallows the single tap, so the
+                        // `.onTapGesture(count: 2)` layered on it never fired and
+                        // drill-down was unreachable. Plain view + contentShape
+                        // lets both gestures coexist.
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Image(systemName: node.category.symbol)
+                                    .font(.title2)
+                                    .foregroundStyle(node.category.color)
+                                Spacer()
+                                if !node.children.isEmpty {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
                                 }
-                                Text(node.name)
-                                    .font(.body.weight(.medium))
-                                    .lineLimit(1)
-                                Text(node.sizeString)
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(Color.accentColor)
-                                Text("\(node.fileCount.formatted()) files")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                GeometryReader { barProxy in
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(node.category.color.opacity(0.7))
-                                        .frame(width: barProxy.size.width * CGFloat(node.sizeBytes) / CGFloat(max(current.sizeBytes, 1)))
-                                }
-                                .frame(height: 6)
                             }
-                            .padding(DesignTokens.Space.m)
-                            .frame(height: 140)
-                            .background(state.selectedNode?.id == node.id ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06))
-                            .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
-                                    .stroke(state.selectedNode?.id == node.id ? Color.accentColor : .clear, lineWidth: 2)
-                            )
+                            Text(node.name)
+                                .font(.body.weight(.medium))
+                                .lineLimit(1)
+                            Text(node.sizeString)
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(Color.accentColor)
+                            Text("\(node.fileCount.formatted()) files")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            GeometryReader { barProxy in
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(node.category.color.opacity(0.7))
+                                    .frame(width: barProxy.size.width * CGFloat(node.sizeBytes) / CGFloat(max(current.sizeBytes, 1)))
+                            }
+                            .frame(height: 6)
                         }
-                        .buttonStyle(.plain)
-                        .help(node.tooltip)
+                        .padding(DesignTokens.Space.m)
+                        .frame(height: 140)
+                        .background(state.selectedNode?.id == node.id ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06))
+                        .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
+                                .stroke(state.selectedNode?.id == node.id ? Color.accentColor : .clear, lineWidth: 2)
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture { state.selectedNode = node }
                         .onTapGesture(count: 2) {
                             if !node.children.isEmpty {
                                 drillPath.append(node)
@@ -71,12 +72,22 @@ struct FolderGridView: View {
                                 state.expandNode(path: node.path)
                             }
                         }
+                        .help(node.tooltip)
                         .contextMenu {
-                            Button("Reveal in Finder") { }
-                            Button("Quick Look") { state.quickLookNode = node }
-                            Divider()
-                            Button("Stage for Cleanup") {
-                                state.stage(source: "Grid", path: node.path, bytes: node.sizeBytes)
+                            if node.isActionable {
+                                Button("Reveal in Finder") {
+                                    NSWorkspace.shared.selectFile((node.path as NSString).expandingTildeInPath, inFileViewerRootedAtPath: "")
+                                }
+                                Button("Quick Look") { state.quickLookNode = node }
+                                Divider()
+                                Button("Stage for Cleanup") {
+                                    state.stage(source: "Grid", path: node.path, bytes: node.sizeBytes)
+                                }
+                            } else {
+                                // Aggregated tail node: nothing to reveal and
+                                // nothing safe to stage.
+                                Text("Aggregated items — not a real folder")
+                                    .font(.caption)
                             }
                         }
                     }

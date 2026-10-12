@@ -128,8 +128,11 @@ final class FileProvenanceEngine: ObservableObject, @unchecked Sendable {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
+            // Drain before waiting — see DiskTopologyService: a child that
+            // writes more than the 64 KB pipe buffer deadlocks forever.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            let output = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard let output, output != "(null)", !output.isEmpty else { return nil }
             return output

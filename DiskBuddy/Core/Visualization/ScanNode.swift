@@ -60,8 +60,20 @@ struct ScanNode: Identifiable, Hashable, Codable, Sendable {
     /// Double-click expands on demand.
     let isCollapsed: Bool
     let collapseReason: String?
+    /// True for the synthetic "Other (N items)" tail node produced when a
+    /// directory has more children than the breadth cap. It is NOT a real
+    /// filesystem object — it must never be revealed, staged, or trashed.
+    let isSyntheticAggregate: Bool
+    /// Computed sizes are lower bounds (scan budget or a failed measurement).
+    let isPartial: Bool
 
-    init(id: UUID = UUID(), name: String, path: String, sizeBytes: Int64, category: NodeCategory, fileCount: Int, children: [ScanNode] = [], modified: Date? = nil, physicalBytes: Int64? = nil, isCollapsed: Bool = false, collapseReason: String? = nil) {
+    /// Whether Finder/staging actions make sense for this node. The synthetic
+    /// "Other (N items)" tail and any other path-less node must not offer
+    /// "Reveal in Finder" (there is nothing to reveal) or "Stage for Cleanup"
+    /// (staging it used to trash the whole parent folder).
+    var isActionable: Bool { !isSyntheticAggregate && !path.isEmpty }
+
+    init(id: UUID = UUID(), name: String, path: String, sizeBytes: Int64, category: NodeCategory, fileCount: Int, children: [ScanNode] = [], modified: Date? = nil, physicalBytes: Int64? = nil, isCollapsed: Bool = false, collapseReason: String? = nil, isSyntheticAggregate: Bool = false, isPartial: Bool = false) {
         self.id = id
         self.name = name
         self.path = path
@@ -73,6 +85,8 @@ struct ScanNode: Identifiable, Hashable, Codable, Sendable {
         self.physicalBytes = physicalBytes
         self.isCollapsed = isCollapsed
         self.collapseReason = collapseReason
+        self.isSyntheticAggregate = isSyntheticAggregate
+        self.isPartial = isPartial
     }
 
     var sizeString: String {

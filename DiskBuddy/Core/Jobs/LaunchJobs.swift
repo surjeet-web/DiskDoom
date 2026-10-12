@@ -20,7 +20,9 @@ enum LaunchJobs {
         budgets: SpaceBudgetEngine,
         compression: SmartCompressionEngine,
         privacy: PrivacyScannerEngine,
-        topology: DiskTopologyService
+        topology: DiskTopologyService,
+        inventory: AppInventoryService,
+        devWorkspace: DeveloperWorkspaceScanner
     ) {
         // ── Foreground: hydrate before first meaningful paint ──
         coordinator.registerForeground(name: "Refresh license state") {
@@ -44,29 +46,52 @@ enum LaunchJobs {
         }
 
         // ── Background: precompute + probe (bounded to 2 workers) ──
+        coordinator.registerBackground(name: "Scan app inventory") {
+            inventory.scan()
+        }
         coordinator.registerBackground(name: "Precompute litter scores") {
-            await MainActor.run { litter.compute() }
+            await MainActor.run { litter.compute(apps: inventory.apps, launchDays: lifecycle.trackedDaysSinceLaunch) }
         }
         coordinator.registerBackground(name: "Precompute health score") {
-            await MainActor.run { health.compute() }
+            // Records stream in asynchronously from restoreCachedScan, so this
+            // may see an empty index. DiskHealthEngine now refuses to score
+            // below a minimum record count rather than inventing a grade, and
+            // DiskHealthView recomputes when records land.
+            await MainActor.run { health.compute(records: state.records, apps: inventory.apps) }
         }
-        coordinator.registerBackground(name: "Precompute forecast") {
-            await MainActor.run { forecast.compute() }
+        coordinator.registerBackground(name: "Record usage snapshot") {
+            // Forecast history: one capacity measurement per launch.
+            let url = URL(fileURLWithPath: "/")
+            if let v = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
+               let total = v.volumeTotalCapacity {
+                let free = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
+                let capacity = Int64(total)
+                let used = capacity - free
+                await MainActor.run {
+                    forecast.recordSnapshot(
+                        totalCapacity: capacity, usedSize: used, freeSize: free,
+                        source: .launch)
+                }
+            }
+            await forecast.compute()
         }
         coordinator.registerBackground(name: "Track app lifecycle") {
             await MainActor.run {
-                lifecycle.compute()
+                lifecycle.compute(apps: inventory.apps)
                 lifecycle.startLaunchWatcher()
             }
         }
         coordinator.registerBackground(name: "Scan dev caches") {
             await MainActor.run { devcaches.scan() }
         }
+        coordinator.registerBackground(name: "Scan developer workspaces") {
+            await MainActor.run { devWorkspace.scan() }
+        }
         coordinator.registerBackground(name: "Evaluate budgets") {
-            await MainActor.run { budgets.evaluate() }
+            await MainActor.run { budgets.evaluate(records: state.records) }
         }
         coordinator.registerBackground(name: "Analyze compression") {
-            await MainActor.run { compression.analyze() }
+            await MainActor.run { compression.analyze(records: state.records) }
         }
         coordinator.registerBackground(name: "Scan privacy") {
             await MainActor.run { privacy.scan() }

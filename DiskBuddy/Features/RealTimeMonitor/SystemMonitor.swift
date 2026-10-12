@@ -30,6 +30,10 @@ final class SystemMonitor: ObservableObject, @unchecked Sendable {
     private var prevCPU = PrevCPUTicks()
     private var prevProcCPU: [Int32: UInt64] = [:]
     private var prevSampleTime = Date()
+    private var tick = 0
+    /// Icons are expensive to load (disk I/O) — cache one per bundle path.
+    /// Main-thread confined (all sampling happens on the main actor).
+    private var iconCache: [String: NSImage] = [:]
 
     struct PrevCPUTicks {
         var user: UInt32 = 0
@@ -53,13 +57,18 @@ final class SystemMonitor: ObservableObject, @unchecked Sendable {
 
     @MainActor
     private func sample() {
+        tick += 1
         let now = Date()
         let dt = max(now.timeIntervalSince(prevSampleTime), 0.01)
         prevSampleTime = now
         sampleCPU()
         sampleMemory()
         sampleUptime()
-        sampleProcesses(dt: dt)
+        // Process sampling (icon loads + proc_pidinfo per app) every 3s,
+        // not every tick — 1s made the whole UI stutter on icon I/O.
+        if tick % 3 == 1 {
+            sampleProcesses(dt: dt * 3)
+        }
     }
 
     // MARK: CPU (host_processor_info, all cores averaged)
@@ -140,16 +149,33 @@ final class SystemMonitor: ObservableObject, @unchecked Sendable {
             let totalTicks = cpuTicks(pid: pid)
             var cpu = 0.0
             if let prev = prevProcCPU[pid], dt > 0 {
-                cpu = Double(totalTicks &- prev) / 100_000_000.0 / dt * 100.0
+                // proc_taskinfo pti_total_user / pti_total_system are in
+                // NANOSECONDS. Dividing by 1e8 made every process report 10x
+                // its true CPU% — and disagreed with the (correct)
+                // system-wide gauge on the same screen.
+                cpu = min(100, Double(totalTicks &- prev) / 1_000_000_000.0 / dt * 100.0)
             }
-            prevProcCPU[pid] = totalTicks
+            // Never record a 0 baseline: proc_pidinfo returns 0 on failure,
+            // and a later success would then diff against 0 over the process's
+            // whole lifetime, producing a huge one-sample spike.
+            if totalTicks > 0 { prevProcCPU[pid] = totalTicks }
+            // Cached icon: load once per bundle path, never per sample.
             // icon(forFile:) never traps (unlike NSRunningApplication.icon
-            // IUO); fall back to a guaranteed-present path for icon-less PIDs.
+            // IUU); fall back to a guaranteed-present path for icon-less PIDs.
             let iconPath = app.bundleURL?.path ?? app.executableURL?.path ?? "/bin/ls"
+            let icon: NSImage
+            if let cached = iconCache[iconPath] {
+                icon = cached
+            } else {
+                let loaded = NSWorkspace.shared.icon(forFile: iconPath)
+                loaded.size = NSSize(width: 16, height: 16)
+                iconCache[iconPath] = loaded
+                icon = loaded
+            }
             updated.append(LiveProcess(
                 pid: pid,
                 name: app.localizedName ?? "Unknown",
-                icon: NSWorkspace.shared.icon(forFile: iconPath),
+                icon: icon,
                 launchDate: app.launchDate,
                 residentBytes: resident,
                 cpuPercent: max(0, cpu)))

@@ -73,7 +73,12 @@ struct DuplicatesView: View {
         }
         .padding(DesignTokens.Space.m)
         .task(id: [state.dupMinBytes, Int64(state.records.count)]) {
-            if !state.records.isEmpty { runFinder() }
+            // Auto-run only when the scan data or threshold actually changed —
+            // not on every tab visit (hashing is expensive).
+            if !state.records.isEmpty, finder.lastRunMinBytes != state.dupMinBytes || finder.sets.isEmpty {
+                state.saveSettings()
+                runFinder()
+            }
         }
         .onDisappear { finder.cancel() }
     }

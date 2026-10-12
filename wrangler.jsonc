@@ -1,0 +1,52 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "diskbuddy-license",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-03",
+  "workers_dev": true,
+
+  "vars": {
+    "ENVIRONMENT": "production",
+    "CLAUDE_API_URL": "https://api.anthropic.com/v1/messages",
+    "CLAUDE_MODEL": "claude-sonnet-4-20250514",
+    "ALLOWED_ORIGINS": "https://diskbuddy.com,https://www.diskbuddy.com",
+    "PRODUCT_ID": "com.diskbuddy.app",
+    "LATEST_APP_VERSION": "1.0.0",
+    "MAX_BODY_BYTES": "32768"
+  },
+
+  "kv_namespaces": [
+    {
+      "binding": "LICENSES",
+      "id": "REPLACE_WITH_LICENSES_ID"
+    },
+    {
+      "binding": "REVOCATIONS",
+      "id": "REPLACE_WITH_REVOCATIONS_ID"
+    },
+    {
+      "binding": "ANALYTICS",
+      "id": "REPLACE_WITH_ANALYTICS_ID"
+    },
+    {
+      "binding": "RATE_LIMITS",
+      "id": "REPLACE_WITH_RATE_LIMITS_ID"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LICENSE_DO",
+        "class_name": "LicenseDO"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["LicenseDO"]
+    }
+  ]
+}

@@ -1,57 +1,125 @@
 import SwiftUI
+import AppKit
 
-// MARK: - §17 Applications: Uninstall Confirmation Sheet (always Trash, never delete)
+// MARK: - §17 Uninstall Confirmation Sheet (real bundle + artifacts, always Trash)
 
 struct UninstallSheet: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var overlays: OverlayStack
+    @EnvironmentObject var inventory: AppInventoryService
     let app: AppEntry
-    @State private var keepSharedFramework = false
+    @State private var excludedPaths: Set<String> = []
+
+    private var sharedArtifacts: [AppArtifactInfo] {
+        app.artifacts.filter { artifact in
+            inventory.sharedArtifactOwners.contains(where: {
+                artifact.path.localizedCaseInsensitiveContains($0)
+            })
+        }
+    }
+
+    private var stagedTotal: Int64 {
+        let bundle = app.isStale || excludedPaths.contains(app.bundlePath) ? 0 : app.bundleBytes
+        let artifacts = app.artifacts
+            .filter { !excludedPaths.contains($0.path) }
+            .reduce(0) { $0 + $1.bytes }
+        return bundle + artifacts
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
-            ModalHeader(title: "Uninstall", overlayID: "uninstall") {
+            ModalHeader(title: app.isStale ? "Remove Leftovers" : "Uninstall", overlayID: "uninstall") {
                 state.uninstallApp = nil
             }
             HStack(spacing: DesignTokens.Space.m) {
-                Image(systemName: app.symbol)
-                    .font(.largeTitle)
-                    .foregroundStyle(app.tint)
-                Text("Uninstall \(app.name)?")
-                    .font(.title2.weight(.semibold))
-            }
-            Text("This will move the following to the Trash:")
-                .font(.callout)
-            VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-                Text("Application").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text("/Applications/\(app.name).app — \(app.bundleBytes.fileSizeString)")
-                    .font(.callout.monospaced())
-            }
-            .specCard()
-            VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-                Text("Artifacts (\(8) files)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Group {
-                    Text("~/Library/Caches/\(app.bundleID) — 5.2 GB")
-                    Text("~/Library/HTTPStorages/\(app.bundleID) — 2.1 GB")
-                    Text("~/Library/Application Support/\(app.name)/ — 0.6 GB")
-                    Text("~/Library/Preferences/\(app.bundleID).plist — 12 KB")
+                if !app.bundlePath.isEmpty {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: app.bundlePath))
+                        .resizable()
+                        .frame(width: 48, height: 48)
                 }
-                .font(.callout.monospaced())
+                VStack(alignment: .leading) {
+                    Text("\(app.isStale ? "Remove leftovers of" : "Uninstall") \(app.name)?")
+                        .font(.title2.weight(.semibold))
+                    Text("\(app.bundleID) · v\(app.version)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .specCard()
-            if app.name == "Google Chrome" {
+            Text("This will move the following to the Trash (uncheck to keep):")
+                .font(.callout)
+            ScrollView {
                 VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-                    Label("GoogleSoftwareUpdate.framework is also used by: Google Drive, Google Earth. Removing may affect these apps.", systemImage: "exclamationmark.triangle.fill")
+                    if !app.isStale && !app.bundlePath.isEmpty {
+                        Toggle(isOn: Binding(
+                            get: { !excludedPaths.contains(app.bundlePath) },
+                            set: { keep in
+                                if keep { excludedPaths.remove(app.bundlePath) }
+                                else { excludedPaths.insert(app.bundlePath) }
+                            })) {
+                            HStack {
+                                Text("Application bundle").font(.caption.weight(.semibold))
+                                Spacer()
+                                Text(app.bundleBytes.fileSizeString).font(.caption.monospacedDigit())
+                            }
+                        }
+                        Text(app.bundlePath)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Divider()
+                    }
+                    Text("Artifacts (\(app.artifacts.count))").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    if app.artifacts.isEmpty {
+                        Text("No leftover files found — clean install record.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(app.artifacts, id: \.path) { artifact in
+                        Toggle(isOn: Binding(
+                            get: { !excludedPaths.contains(artifact.path) },
+                            set: { keep in
+                                if keep { excludedPaths.remove(artifact.path) }
+                                else { excludedPaths.insert(artifact.path) }
+                            })) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(shortPath(artifact.path))
+                                        .font(.callout.monospaced())
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(artifact.kind)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(artifact.bytes.fileSizeString)
+                                    .font(.caption.monospacedDigit())
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 300)
+            .specCard()
+            if !sharedArtifacts.isEmpty {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+                    Label(
+                        "\(sharedArtifacts.count) shared resource(s) are also used by other apps. Uncheck them above to keep them.",
+                        systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                    Toggle("Keep this framework", isOn: $keepSharedFramework)
-                        .font(.caption)
+                    ForEach(sharedArtifacts.prefix(3), id: \.path) { artifact in
+                        Text(shortPath(artifact.path))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
                 .padding(DesignTokens.Space.m)
                 .background(.orange.opacity(0.08))
                 .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
             }
-            Text("Total to free: \(app.totalBytes.fileSizeString)")
+            Text("Total to free: \(stagedTotal.fileSizeString)")
                 .font(.title3.weight(.semibold).monospacedDigit())
                 .foregroundStyle(Color.accentColor)
             HStack {
@@ -59,23 +127,39 @@ struct UninstallSheet: View {
                 Button("Cancel") { state.uninstallApp = nil }
                     .buttonStyle(.bordered)
                 Button("Move to Trash") {
-                    state.stage(source: "Uninstall", path: "/Applications/\(app.name).app", bytes: app.bundleBytes)
-                    state.stage(source: "Uninstall", path: "\(app.name) artifacts", bytes: app.artifactBytes)
+                    if !app.isStale, !app.bundlePath.isEmpty, !excludedPaths.contains(app.bundlePath) {
+                        state.stage(source: "Uninstall", path: app.bundlePath, bytes: app.bundleBytes)
+                    }
+                    for artifact in app.artifacts where !excludedPaths.contains(artifact.path) {
+                        state.stage(source: "Uninstall", path: artifact.path, bytes: artifact.bytes)
+                    }
                     state.uninstallApp = nil
                     state.showCleanup = true
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .keyboardShortcut(.defaultAction)
+                .disabled(stagedTotal == 0)
             }
         }
         .padding(DesignTokens.Space.xl)
-        .frame(width: 520)
+        .frame(width: 560, height: 620)
         .onAppear { overlays.present("uninstall") }
         .onDisappear { overlays.dismiss("uninstall") }
+    }
+
+    private func shortPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) { return "~" + path.dropFirst(home.count) }
+        return path
     }
 }
 
 #Preview {
-    UninstallSheet(app: MockApps.all[0]).environmentObject(AppState())
+    UninstallSheet(app: AppEntry(
+        name: "PreviewApp", bundleID: "com.preview.app", bundlePath: "/Applications/PreviewApp.app",
+        version: "1.0", bundleBytes: 1_000_000_000, artifacts: [],
+        installDate: Date(), isStale: false))
+        .environmentObject(AppState())
+        .environmentObject(AppInventoryService())
 }

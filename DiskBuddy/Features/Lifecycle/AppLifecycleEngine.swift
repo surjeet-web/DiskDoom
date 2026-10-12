@@ -76,44 +76,47 @@ final class AppLifecycleEngine: ObservableObject, @unchecked Sendable {
         stopLaunchWatcher()
     }
 
-    /// Mock computation from prototype app inventory + tracked (mock) history.
-    /// Production: same shape, history recorded live by startLaunchWatcher().
-    func compute() {
-        // Mock tracked history (stand-in for NSWorkspace-recorded launches).
-        let now = Date()
+    /// Real computation from the app inventory + tracked launch history.
+    /// Unknown history stays .unknown — nothing is fabricated.
+    func compute(apps: [AppEntry]) {
         let day: TimeInterval = 86_400
-        let mockHistory: [String: (last: Date?, count: Int)] = [
-            "com.google.Chrome": (now, 412),
-            "com.apple.dt.Xcode": (now.addingTimeInterval(-1 * day), 188),
-            "com.tinyspeck.slackmacgap": (now.addingTimeInterval(-2 * day), 340),
-            "com.figma.Desktop": (now.addingTimeInterval(-9 * day), 96),
-            "com.spotify.client": (now.addingTimeInterval(-1 * day), 502),
-            "com.oldvpn.client": (now.addingTimeInterval(-320 * day), 14),
-            "com.beta.editor": (nil, 0),
-        ]
-        entries = MockApps.all.map { app in
-            let tracked = mockHistory[app.bundleID]
-            let lastLaunch = tracked?.last ?? history[app.bundleID]?.launchDates.last
-            let count = max(tracked?.count ?? 0, history[app.bundleID]?.launchDates.count ?? 0)
-            let days = lastLaunch.map { max(0, Int(Date().timeIntervalSince($0) / day)) }
-            return AppLifecycleEntry(
-                appName: app.name,
-                bundleID: app.bundleID,
-                path: "/Applications/\(app.name).app",
-                installDate: Calendar.current.date(byAdding: .day, value: -app.installedDaysAgo, to: now),
-                lastLaunch: lastLaunch,
-                launchCount: count,
-                daysSinceLastLaunch: days,
-                bytes: app.totalBytes,
-                status: AppLifecycleEntry.status(forDays: days))
-        }
-        .sorted {
-            // Abandoned first, then stalest.
-            if ($0.status == .abandoned) != ($1.status == .abandoned) {
-                return $0.status == .abandoned
+        entries = apps
+            .filter { !$0.isStale && !$0.bundlePath.isEmpty }
+            .map { app in
+                let tracked = history[app.bundleID]?.launchDates ?? []
+                let lastLaunch = tracked.last
+                let count = tracked.count
+                let days = lastLaunch.map { max(0, Int(Date().timeIntervalSince($0) / day)) }
+                return AppLifecycleEntry(
+                    appName: app.name,
+                    bundleID: app.bundleID,
+                    path: app.bundlePath,
+                    installDate: app.installDate,
+                    lastLaunch: lastLaunch,
+                    launchCount: count,
+                    daysSinceLastLaunch: days,
+                    bytes: app.totalBytes,
+                    status: AppLifecycleEntry.status(forDays: days))
             }
-            return ($0.daysSinceLastLaunch ?? 9999) > ($1.daysSinceLastLaunch ?? 9999)
+            .sorted {
+                // Abandoned first, then stalest.
+                if ($0.status == .abandoned) != ($1.status == .abandoned) {
+                    return $0.status == .abandoned
+                }
+                return ($0.daysSinceLastLaunch ?? 9999) > ($1.daysSinceLastLaunch ?? 9999)
+            }
+    }
+
+    /// Tracked days since last launch per bundle ID (empty until launches are observed).
+    var trackedDaysSinceLaunch: [String: Int] {
+        let day: TimeInterval = 86_400
+        var result: [String: Int] = [:]
+        for (id, h) in history {
+            if let last = h.launchDates.last {
+                result[id] = max(0, Int(Date().timeIntervalSince(last) / day))
+            }
         }
+        return result
     }
 
     // MARK: Live launch tracking (retained observer, removed on stop/deinit)

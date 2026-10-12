@@ -1,81 +1,456 @@
 import SwiftUI
 import Charts
 
-// MARK: - D2 Disk Space Forecast view (Swift Charts, macOS 13+)
+// MARK: - Disk Forecast view: alerts, trend, chart, category growth, history
 
 struct DiskForecastView: View {
     @EnvironmentObject var engine: DiskForecastEngine
+    @EnvironmentObject var state: AppState
 
     var body: some View {
-        VStack(spacing: 0) {
+        ScrollView {
             if let forecast = engine.forecast {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Disk Space Forecast").font(.title2.weight(.semibold))
-                        Text("\(forecast.isFilling ? "Filling up" : "Stable") · \(String(format: "%+.2f", forecast.dailyGrowthGB)) GB/day")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                VStack(spacing: DesignTokens.Space.l) {
+                    if !engine.alerts.isEmpty {
+                        alertsSection
+                    }
+                    forecastHeader(forecast)
+                    chartSection(forecast)
+                    trendCards(forecast)
+                    if !forecast.categoryGrowth.isEmpty {
+                        categoryGrowthSection(forecast)
+                    }
+                    historySection(forecast)
+                }
+                .padding()
+            } else if engine.isComputing {
+                ProgressView("Computing forecast…")
+                    .frame(maxWidth: .infinity, minHeight: 300)
+            } else {
+                insufficientDataView
+            }
+        }
+        .task {
+            if engine.forecast == nil, !engine.isComputing {
+                await engine.compute()
+            }
+        }
+    }
+
+    // MARK: - Alerts
+
+    private var alertsSection: some View {
+        VStack(spacing: DesignTokens.Space.s) {
+            ForEach(engine.alerts) { alert in
+                HStack(alignment: .top, spacing: DesignTokens.Space.m) {
+                    Image(systemName: alert.severity.icon)
+                        .foregroundStyle(alert.severity.color)
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(alert.title).font(.callout.weight(.semibold))
+                        Text(alert.detail).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if let days = forecast.daysUntilFull, days < 90 {
-                        VStack(alignment: .trailing) {
-                            Label("Full in \(days) days", systemImage: "exclamationmark.triangle.fill")
-                                .font(.callout)
-                                .foregroundStyle(days < 30 ? .red : .orange)
-                            if let date = forecast.fillDate {
-                                Text(date, style: .date).font(.caption).foregroundStyle(.secondary)
-                            }
+                    if let tab = alert.actionTab {
+                        Button("Take Action") {
+                            state.sidebarTab = tab
                         }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
                     }
                 }
                 .padding(DesignTokens.Space.m)
-                Divider()
-                Chart {
-                    ForEach(forecast.points.filter { !$0.isPrediction }) { point in
-                        LineMark(x: .value("Date", point.date), y: .value("Used", point.usedGB))
-                            .foregroundStyle(.blue)
-                            .lineStyle(StrokeStyle(lineWidth: 2))
-                        PointMark(x: .value("Date", point.date), y: .value("Used", point.usedGB))
-                            .foregroundStyle(.blue)
-                    }
-                    ForEach(forecast.points.filter(\.isPrediction)) { point in
-                        LineMark(x: .value("Date", point.date), y: .value("Used", point.usedGB))
-                            .foregroundStyle(.orange.opacity(0.6))
-                            .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                    }
-                    RuleMark(y: .value("Capacity", forecast.totalGB))
-                        .foregroundStyle(.red.opacity(0.4))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                }
-                .chartYScale(domain: 0...(forecast.totalGB * 1.05))
-                .frame(height: 250)
-                .padding()
-                Divider()
-                HStack(spacing: DesignTokens.Space.xl) {
-                    ForecastStatCard(label: "Free Space", value: String(format: "%.0f GB", forecast.freeGB), color: .green)
-                    ForecastStatCard(label: "Daily Growth", value: String(format: "%+.2f GB", forecast.dailyGrowthGB), color: forecast.isFilling ? .red : .green)
-                    ForecastStatCard(label: "Days Until Full", value: forecast.daysUntilFull.map(String.init) ?? "∞", color: (forecast.daysUntilFull ?? 999) < 30 ? .red : .green)
-                }
-                .padding()
-            } else {
-                EmptyState(symbol: "chart.line.uptrend.xyaxis", title: "Need at least 2 snapshots to forecast", message: "Save snapshots over time and DiskDoom will predict when you'll run out of space.")
+                .background(alert.severity.color.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
+                        .stroke(alert.severity.color.opacity(0.2), lineWidth: 1))
             }
         }
-        .onAppear { if engine.forecast == nil { engine.compute() } }
+    }
+
+    // MARK: - Header (big number + trend + projections)
+
+    private func forecastHeader(_ forecast: DiskForecast) -> some View {
+        HStack(spacing: DesignTokens.Space.xl) {
+            VStack(spacing: DesignTokens.Space.s) {
+                if let days = forecast.daysUntilFull {
+                    Text("\(days)")
+                        .font(.system(size: 56, weight: .bold, design: .rounded))
+                        .foregroundStyle(days <= 7 ? .red : days <= 30 ? .orange : .primary)
+                    Text("days until full")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if !forecast.hasReliableProjection {
+                    // `daysUntilFull == nil` means either "no risk" or "not
+                    // enough history" — showing a green tick for the latter
+                    // would be its own lie.
+                    Image(systemName: "clock.badge.questionmark")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary)
+                    Text("Not enough history")
+                        .font(.title3.weight(.medium))
+                        .multilineTextAlignment(.center)
+                    Text("Needs \(Int(DiskForecastEngine.minimumDaySpanForProjection))+ days of snapshots")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.green)
+                    Text("No risk")
+                        .font(.title3.weight(.medium))
+                    Text(forecast.trendDirection == .stable ? "Usage is stable" : "Usage is decreasing")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 180)
+            .accessibleChart(summary: "Disk forecast: \(forecast.trendDirection.label), \(forecast.dailyChangeFormatted). " +
+                (forecast.daysUntilFull.map { "Disk full in approximately \($0) days." }
+                    ?? (forecast.hasReliableProjection
+                        ? "No risk of running out of space."
+                        : "Not enough history yet to predict.")))
+
+            Divider().frame(height: 90)
+
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+                HStack(spacing: 8) {
+                    Image(systemName: forecast.trendDirection.icon)
+                        .foregroundStyle(forecast.trendDirection.color)
+                    Text(forecast.trendDirection.label)
+                        .font(.headline)
+                        .foregroundStyle(forecast.trendDirection.color)
+                }
+                HStack(spacing: 6) {
+                    Text("Daily").font(.caption).foregroundStyle(.secondary).frame(width: 50, alignment: .leading)
+                    Text(forecast.dailyChangeFormatted).font(.caption.weight(.medium).monospacedDigit())
+                }
+                HStack(spacing: 6) {
+                    Text("Weekly").font(.caption).foregroundStyle(.secondary).frame(width: 50, alignment: .leading)
+                    Text(forecast.weeklyChangeFormatted).font(.caption.weight(.medium).monospacedDigit())
+                }
+                HStack(spacing: 4) {
+                    Image(systemName: forecast.confidenceLevel.icon).font(.caption)
+                    Text(forecast.confidenceLevel.label).font(.caption)
+                }
+                .foregroundStyle(forecast.confidenceLevel.color)
+                Text("\(forecast.dataPointCount) data points")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Divider().frame(height: 90)
+
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+                Text("Projections")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(1)
+                if forecast.hasReliableProjection {
+                    ProjectionRow(label: "30 days", current: forecast.currentUsed, projected: forecast.projectedUsage30Days, capacity: forecast.totalCapacity)
+                    ProjectionRow(label: "90 days", current: forecast.currentUsed, projected: forecast.projectedUsage90Days, capacity: forecast.totalCapacity)
+                } else {
+                    // Projecting from < 7 days of history produced figures like
+                    // "100% used, +412 GB" with no indication the model had
+                    // simply saturated. Show nothing rather than nonsense.
+                    Text("Projections need \(Int(DiskForecastEngine.minimumDaySpanForProjection))+ days of history.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let critical = forecast.criticalDate {
+                    HStack(spacing: 4) {
+                        Circle().fill(.red).frame(width: 6, height: 6)
+                        Text("Critical: \(critical.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(DesignTokens.Space.l)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.l))
+    }
+
+    // MARK: - Chart (Swift Charts: solid history, dashed projection, thresholds)
+
+    private func chartSection(_ forecast: DiskForecast) -> some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+            HStack {
+                Text("Usage Over Time").font(.headline)
+                Spacer()
+                HStack(spacing: DesignTokens.Space.m) {
+                    chartLegend(color: .blue, label: "Historical", dashed: false)
+                    chartLegend(color: .blue.opacity(0.4), label: "Projected", dashed: true)
+                    chartLegend(color: .red, label: "90% used", dashed: true)
+                    chartLegend(color: .orange, label: "80% used", dashed: true)
+                }
+                .font(.caption)
+            }
+            .padding(.horizontal, DesignTokens.Space.m)
+
+            Chart {
+                ForEach(forecast.points.filter { !$0.isProjected }) { point in
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Used", Double(point.usedBytes) / 1_073_741_824))
+                    .foregroundStyle(.blue)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+                    PointMark(
+                        x: .value("Date", point.date),
+                        y: .value("Used", Double(point.usedBytes) / 1_073_741_824))
+                    .foregroundStyle(.blue)
+                }
+                ForEach(forecast.points.filter(\.isProjected)) { point in
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Used", Double(point.usedBytes) / 1_073_741_824))
+                    .foregroundStyle(.blue.opacity(0.4))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                }
+                RuleMark(y: .value("Critical", Double(forecast.totalCapacity) * 0.9 / 1_073_741_824))
+                    .foregroundStyle(.red.opacity(0.4))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                RuleMark(y: .value("Warning", Double(forecast.totalCapacity) * 0.8 / 1_073_741_824))
+                    .foregroundStyle(.orange.opacity(0.4))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
+            .chartYScale(domain: 0...(Double(forecast.totalCapacity) / 1_073_741_824 * 1.05))
+            .chartYAxisLabel("GB used")
+            .frame(height: 240)
+            .padding(.horizontal, DesignTokens.Space.m)
+            .padding(.bottom, DesignTokens.Space.m)
+        }
+        .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+    }
+
+    private func chartLegend(color: Color, label: String, dashed: Bool) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(color)
+                .frame(width: 16, height: 2)
+                .overlay(alignment: .center) {
+                    if dashed {
+                        Color.clear.frame(width: 16, height: 2)
+                    }
+                }
+            Text(label).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Trend cards
+
+    private func trendCards(_ forecast: DiskForecast) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 200, maximum: 300))], spacing: DesignTokens.Space.m) {
+            TrendCard(
+                title: "Current Usage",
+                value: ByteFormatting.format(forecast.currentUsed),
+                subtitle: String(format: "%.1f%% of %@", Double(forecast.currentUsed) / Double(max(forecast.totalCapacity, 1)) * 100, ByteFormatting.format(forecast.totalCapacity)),
+                icon: "internaldrive.fill", color: .blue)
+            TrendCard(
+                title: "Free Space",
+                value: ByteFormatting.format(forecast.currentFree),
+                subtitle: String(format: "%.1f%%", Double(forecast.currentFree) / Double(max(forecast.totalCapacity, 1)) * 100),
+                icon: "checkmark.circle", color: .green)
+            TrendCard(
+                title: "Daily Change",
+                value: forecast.dailyChangeFormatted,
+                subtitle: forecast.trendDirection.label,
+                icon: forecast.trendDirection.icon,
+                color: forecast.trendDirection.color)
+            if let warning = forecast.warningDate {
+                TrendCard(
+                    title: "Below 20% Free",
+                    value: warning.formatted(date: .abbreviated, time: .omitted),
+                    subtitle: "\(max(0, Int(warning.timeIntervalSinceNow / 86_400)))) days",
+                    icon: "exclamationmark.triangle.fill", color: .orange)
+            }
+        }
+    }
+
+    // MARK: - Category growth
+
+    private func categoryGrowthSection(_ forecast: DiskForecast) -> some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+            Text("Category Growth").font(.headline)
+                .padding(.horizontal, DesignTokens.Space.m)
+            let maxCategory = forecast.categoryGrowth.map(\.currentSize).max() ?? 1
+            ForEach(forecast.categoryGrowth) { growth in
+                HStack(spacing: DesignTokens.Space.m) {
+                    Text(growth.category.capitalized)
+                        .font(.callout)
+                        .frame(width: 100, alignment: .leading)
+                    Text(growth.currentFormatted)
+                        .font(.callout.monospacedDigit())
+                        .frame(width: 72, alignment: .trailing)
+                    HStack(spacing: 4) {
+                        Image(systemName: growth.isGrowing ? "arrow.up.right" : "arrow.down.right")
+                            .font(.caption2)
+                            .foregroundStyle(growth.isGrowing ? .red : .green)
+                        Text((growth.isGrowing ? "+" : "-") + growth.changeFormatted)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(growth.isGrowing ? .red : .green)
+                    }
+                    .frame(width: 84, alignment: .leading)
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(growth.isGrowing ? Color.red.opacity(0.2) : Color.green.opacity(0.2))
+                            .overlay(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(growth.isGrowing ? Color.red.opacity(0.5) : Color.green.opacity(0.5))
+                                    .frame(width: max(geo.size.width * CGFloat(growth.currentSize) / CGFloat(max(maxCategory, 1)), 2))
+                            }
+                    }
+                    .frame(height: 14)
+                    Text(growth.dailyRateFormatted)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .trailing)
+                }
+                .padding(.horizontal, DesignTokens.Space.m)
+            }
+        }
+        .padding(.vertical, DesignTokens.Space.s)
+        .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+    }
+
+    // MARK: - History table
+
+    private func historySection(_ forecast: DiskForecast) -> some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+            HStack {
+                Text("Usage History").font(.headline)
+                Spacer()
+                Text("\(forecast.history.count) entries")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, DesignTokens.Space.m)
+
+            HStack(spacing: DesignTokens.Space.m) {
+                Text("Date").font(.caption).foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
+                Text("Source").font(.caption).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
+                Text("Used").font(.caption).foregroundStyle(.secondary).frame(width: 72, alignment: .trailing)
+                Text("Free").font(.caption).foregroundStyle(.secondary).frame(width: 72, alignment: .trailing)
+                Text("% Used").font(.caption).foregroundStyle(.secondary).frame(width: 60, alignment: .trailing)
+                Spacer()
+            }
+            .padding(.horizontal, DesignTokens.Space.m)
+
+            ForEach(Array(forecast.history.suffix(20).reversed())) { snapshot in
+                HStack(spacing: DesignTokens.Space.m) {
+                    Text(snapshot.timestamp.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 110, alignment: .leading)
+                    Text(snapshot.source.rawValue.capitalized)
+                        .font(.caption2)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule())
+                        .frame(width: 70, alignment: .leading)
+                    Text(ByteFormatting.format(snapshot.usedSize))
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 72, alignment: .trailing)
+                    Text(ByteFormatting.format(snapshot.freeSize))
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 72, alignment: .trailing)
+                    let percent = snapshot.usedPercent
+                    Text(String(format: "%.1f%%", percent))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(percent > 90 ? .red : percent > 75 ? .orange : .secondary)
+                        .frame(width: 60, alignment: .trailing)
+                    Spacer()
+                }
+                .padding(.horizontal, DesignTokens.Space.m)
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    // MARK: - Insufficient data
+
+    private var insufficientDataView: some View {
+        VStack(spacing: DesignTokens.Space.l) {
+            Spacer()
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("Not Enough Data").font(.title2.weight(.semibold))
+            Text("DiskDoom records your disk usage at every launch and every scan. After a few days you'll see usage trends and predictions here.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 400)
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+                Label("Usage is recorded automatically at each launch", systemImage: "1.circle.fill")
+                    .foregroundStyle(Color.blue)
+                Label("Run scans to record category breakdowns too", systemImage: "2.circle.fill")
+                    .foregroundStyle(Color.blue)
+                Label("After 7+ days, full forecasting with projections", systemImage: "3.circle.fill")
+                    .foregroundStyle(Color.blue)
+            }
+            .font(.callout)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
-private struct ForecastStatCard: View {
+// MARK: - Subviews
+
+private struct ProjectionRow: View {
     let label: String
+    let current: Int64
+    let projected: Int64
+    let capacity: Int64
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                let change = projected - current
+                Image(systemName: change > 0 ? "arrow.up" : "arrow.down")
+                    .font(.caption2)
+                    .foregroundStyle(change > 0 ? .red : .green)
+                Text(ByteFormatting.format(projected))
+                    .font(.callout.weight(.medium).monospacedDigit())
+                Text((change > 0 ? "+" : "") + ByteFormatting.format(change))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(change > 0 ? .red : .green)
+            }
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.secondary.opacity(0.1))
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(projected > Int64(Double(capacity) * 0.9) ? Color.red.opacity(0.5) : Color.blue.opacity(0.3))
+                            .frame(width: max(geo.size.width * CGFloat(projected) / CGFloat(max(capacity, 1)), 2))
+                    }
+            }
+            .frame(height: 4)
+        }
+    }
+}
+
+private struct TrendCard: View {
+    let title: String
     let value: String
+    let subtitle: String
+    let icon: String
     let color: Color
 
     var body: some View {
-        VStack(spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.title.weight(.bold)).monospacedDigit().foregroundStyle(color)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).foregroundStyle(color)
+                Text(title).font(.caption).foregroundStyle(.secondary)
+            }
+            Text(value).font(.title3.weight(.bold).monospacedDigit())
+            Text(subtitle).font(.caption).foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(DesignTokens.Space.m)
         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
     }
@@ -83,6 +458,7 @@ private struct ForecastStatCard: View {
 
 #Preview {
     DiskForecastView()
-        .environmentObject({ let e = DiskForecastEngine(); e.compute(); return e }())
-        .frame(width: 700, height: 600)
+        .environmentObject(DiskForecastEngine())
+        .environmentObject(AppState())
+        .frame(width: 900, height: 620)
 }

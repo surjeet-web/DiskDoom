@@ -41,7 +41,14 @@ struct SmartCleanView: View {
                 }
             }
         }
-        .onAppear { engine.compute(records: state.records) }
+        // WHY: `.onAppear` ran against a *partial* index (cache hydration streams the
+        // records in), so recommendations were computed from a few thousand
+        // records and never recomputed. Gate on a finished scan and re-run when
+        // the index actually changes.
+        .task(id: state.scanPhase == .done ? state.records.count : -1) {
+            guard state.scanPhase == .done, !state.records.isEmpty else { return }
+            engine.compute(records: state.records)
+        }
     }
 
     private var recommendationsList: some View {

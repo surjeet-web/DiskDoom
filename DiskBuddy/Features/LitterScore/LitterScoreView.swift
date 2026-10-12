@@ -5,6 +5,8 @@ import SwiftUI
 struct LitterScoreView: View {
     @EnvironmentObject var engine: LitterScoreEngine
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var inventory: AppInventoryService
+    @EnvironmentObject var lifecycle: AppLifecycleEngine
     @State private var sortWorstFirst = true
 
     private var entries: [LitterScoreEntry] {
@@ -33,15 +35,21 @@ struct LitterScoreView: View {
             .padding(DesignTokens.Space.m)
             Divider()
             ScrollView {
-                LazyVStack(spacing: DesignTokens.Space.s) {
-                    ForEach(entries) { entry in
-                        LitterScoreCard(entry: entry)
+                if entries.isEmpty {
+                    EmptyState(symbol: "gauge.with.dots.needle.67percent", title: "No app data yet", message: "App litter scores are computed from your installed apps. Open the Applications tab to scan your inventory.")
+                } else {
+                    LazyVStack(spacing: DesignTokens.Space.s) {
+                        ForEach(entries) { entry in
+                            LitterScoreCard(entry: entry)
+                        }
                     }
+                    .padding(DesignTokens.Space.m)
                 }
-                .padding(DesignTokens.Space.m)
             }
         }
-        .onAppear { if engine.entries.isEmpty { engine.compute() } }
+        .task(id: inventory.apps.count) {
+            engine.compute(apps: inventory.apps, launchDays: lifecycle.trackedDaysSinceLaunch)
+        }
     }
 }
 
@@ -108,11 +116,14 @@ private struct LitterScoreCard: View {
             HStack {
                 if let rec = entry.recommendation {
                     Button(rec) {
-                        state.stage(source: "Litter Score", path: "\(entry.appName) caches", bytes: entry.artifactBytes)
+                        for path in entry.artifactPaths {
+                            state.stage(source: "Litter Score", path: path)
+                        }
                         state.showCleanup = true
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(entry.artifactPaths.isEmpty)
                 }
                 Spacer()
             }
@@ -124,7 +135,9 @@ private struct LitterScoreCard: View {
 
 #Preview {
     LitterScoreView()
-        .environmentObject({ let e = LitterScoreEngine(); e.compute(); return e }())
+        .environmentObject({ let e = LitterScoreEngine(); e.compute(apps: []); return e }())
         .environmentObject(AppState())
+        .environmentObject(AppInventoryService())
+        .environmentObject(AppLifecycleEngine())
         .frame(width: 700, height: 500)
 }

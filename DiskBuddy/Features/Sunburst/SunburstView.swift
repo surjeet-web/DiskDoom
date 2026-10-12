@@ -67,6 +67,17 @@ struct SunburstView: View {
                         handleTap(at: value.location, center: center, innerR: innerR, midR: midR, outerR: outerR)
                     }
                 )
+                // hoveredID was read by the fill color but never written, so the
+                // hover highlight was dead code. Mirror handleTap's segment
+                // resolution so hover highlights the same segment a click would.
+                .onContinuousHover(coordinateSpace: .local) { phase in
+                    switch phase {
+                    case .active(let location):
+                        hoveredID = hitID(at: location, center: center, innerR: innerR, midR: midR, outerR: outerR)
+                    case .ended:
+                        hoveredID = nil
+                    }
+                }
             }
             CategoryLegend(categories: NodeCategory.allCases)
         }
@@ -108,6 +119,35 @@ struct SunburstView: View {
             if !drillPath.isEmpty { drillPath.removeLast() }
             return
         }
+        switch segment(at: point, center: center, midR: midR, outerR: outerR) {
+        case .inner(let node):
+            state.selectedNode = node
+            if !node.children.isEmpty { drillPath.append(node) }
+        case .outer(let child):
+            state.selectedNode = child
+        case .none:
+            break
+        }
+    }
+
+    /// Which drawn segment a point falls in. Shared by tap and hover so the
+    /// highlight can never disagree with what a click selects.
+    private enum Segment {
+        case inner(ScanNode)
+        case outer(ScanNode)
+        case none
+    }
+
+    private func hitID(at point: CGPoint, center: CGPoint, innerR: CGFloat, midR: CGFloat, outerR: CGFloat) -> UUID? {
+        switch segment(at: point, center: center, midR: midR, outerR: outerR) {
+        case .inner(let node), .outer(let node): return node.id
+        case .none: return nil
+        }
+    }
+
+    private func segment(at point: CGPoint, center: CGPoint, midR: CGFloat, outerR: CGFloat) -> Segment {
+        let dx = point.x - center.x, dy = point.y - center.y
+        let dist = hypot(dx, dy)
         var angle = atan2(dy, dx)
         if angle < -Double.pi / 2 { angle += 2 * Double.pi }
         let normalized = (angle + Double.pi / 2).truncatingRemainder(dividingBy: 2 * Double.pi)
@@ -117,27 +157,24 @@ struct SunburstView: View {
             let end = start + frac * 2 * Double.pi
             if normalized >= start && normalized < end {
                 if dist < midR {
-                    // Inner segment: select + drill.
-                    state.selectedNode = node
-                    if !node.children.isEmpty { drillPath.append(node) }
+                    return .inner(node)
                 } else if dist <= outerR {
-                    // Outer segment: select matching child.
                     let outer = node.children.isEmpty ? [node] : node.children
                     let total = outer.reduce(0) { $0 + $1.sizeBytes }
                     var oStart = start
                     for child in outer {
                         let oEnd = oStart + Double(child.sizeBytes) / Double(max(total, 1)) * (end - start)
                         if normalized >= oStart && normalized < oEnd {
-                            state.selectedNode = child
-                            break
+                            return .outer(child)
                         }
                         oStart = oEnd
                     }
                 }
-                return
+                return .none
             }
             start = end
         }
+        return .none
     }
 }
 

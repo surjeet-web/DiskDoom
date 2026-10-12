@@ -63,6 +63,11 @@ struct PrivacyFinding: Identifiable {
 final class PrivacyScannerEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var findings: [PrivacyFinding] = []
     @Published private(set) var isScanning = false
+    /// How many matching locations were actually examined, and how many were
+    /// unreadable (typically: no Full Disk Access). Surfaced in the UI so the
+    /// result is never mistaken for a complete measurement.
+    @Published private(set) var scannedLocationCount = 0
+    @Published private(set) var unreadableLocationCount = 0
     private var task: Task<Void, Never>?
 
     // Curated SDK patterns: analytics/ad/crash caches ONLY.
@@ -84,39 +89,110 @@ final class PrivacyScannerEngine: ObservableObject, @unchecked Sendable {
 
     var totalBytes: Int64 { findings.reduce(0) { $0 + $1.bytes } }
 
-    /// Mock scan against prototype paths (production: same patterns over real scan).
+    /// Real scan: probes the actual `~/Library` locations for the SDK patterns
+    /// above and measures whatever is genuinely there.
+    ///
+    /// This previously returned six hardcoded findings with hardcoded byte
+    /// counts, so the tab confidently reported "6 findings · 650 MB" and a
+    /// score of 31/100 on a Mac with none of those SDKs installed. Fabricated
+    /// numbers are worse than no feature.
+    ///
+    /// Bounded by both a time budget and an entry cap, and it reports how many
+    /// locations it actually examined plus how many were unreadable (no Full
+    /// Disk Access), so the UI can be honest about coverage.
     func scan() {
         task?.cancel()
         task = Task { [weak self] in
             guard let self else { return }
-            await MainActor.run { self.isScanning = true }
-            let found = Self.mockFindings()
+            await MainActor.run {
+                self.isScanning = true
+                self.findings = []
+                self.scannedLocationCount = 0
+                self.unreadableLocationCount = 0
+            }
+            let result = await Task.detached(priority: .utility) {
+                Self.realScan()
+            }.value
             guard !Task.isCancelled else {
                 await MainActor.run { self.isScanning = false }
                 return
             }
             await MainActor.run {
-                self.findings = found
+                self.findings = result.findings
+                self.scannedLocationCount = result.locationsExamined
+                self.unreadableLocationCount = result.unreadable
                 self.isScanning = false
             }
         }
     }
 
-    private static func mockFindings() -> [PrivacyFinding] {
-        let candidates: [(String, Int64)] = [
-                ("~/Library/Caches/com.facebook.sdk/FBSDKCache", 240_000_000),
-                ("~/Library/Caches/com.appsflyer/attribution", 180_000_000),
-                ("~/Library/Caches/com.amplitude/session-events", 96_000_000),
-                ("~/Library/Caches/com.mixpanel/mp-events", 64_000_000),
-                ("~/Library/Caches/com.crashlytics/reports", 42_000_000),
-                ("~/Library/Caches/com.twitter.sdk/auth", 28_000_000),
-            ]
-        return candidates.compactMap { (path, bytes) -> PrivacyFinding? in
-            guard let match = Self.patterns.first(where: { path.localizedCaseInsensitiveContains($0.0) })
-            else { return nil }
-            return PrivacyFinding(path: path, bytes: bytes, trackerName: match.1, category: match.2, severity: match.3, impact: match.4)
+    private static func realScan() -> (findings: [PrivacyFinding], locationsExamined: Int, unreadable: Int) {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        let roots = [
+            "\(home)/Library/Caches",
+            "\(home)/Library/Application Support",
+            "\(home)/Library/Containers",
+            "\(home)/Library/Group Containers",
+        ]
+        var findings: [PrivacyFinding] = []
+        var examined = 0
+        var unreadable = 0
+        let deadline = Date().addingTimeInterval(8) // bounded: never stall the tab
+        var entryBudget = 60_000
+
+        outer: for root in roots {
+            guard let children = try? fm.contentsOfDirectory(atPath: root) else {
+                unreadable += 1
+                continue
+            }
+            for name in children {
+                if Date() > deadline || entryBudget <= 0 { break outer }
+                entryBudget -= 1
+                guard let match = patterns.first(where: {
+                    name.localizedCaseInsensitiveContains($0.0)
+                }) else { continue }
+                let path = root + "/" + name
+                examined += 1
+                var st = stat()
+                guard lstat(path, &st) == 0 else { unreadable += 1; continue }
+                var bytes: Int64
+                if (st.st_mode & S_IFMT) == S_IFDIR {
+                    bytes = boundedDirectorySize(at: path, deadline: deadline)
+                } else {
+                    bytes = Int64(st.st_size)
+                }
+                guard bytes > 0 else { continue }
+                findings.append(PrivacyFinding(
+                    path: path, bytes: bytes, trackerName: match.1,
+                    category: match.2, severity: match.3, impact: match.4))
+            }
         }
-        .sorted { $0.severity > $1.severity }
+        return (findings.sorted { $0.severity > $1.severity }, examined, unreadable)
+    }
+
+    /// Recursive size with a deadline so one huge SDK folder can't hang the scan.
+    private static func boundedDirectorySize(at path: String, deadline: Date) -> Int64 {
+        var total: Int64 = 0
+        var stack = [path]
+        var steps = 0
+        while let dir = stack.popLast() {
+            steps += 1
+            if steps > 20_000 || Date() > deadline { return total }
+            guard let kids = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+            for kid in kids {
+                let child = dir + "/" + kid
+                var st = stat()
+                guard lstat(child, &st) == 0 else { continue }
+                if (st.st_mode & S_IFMT) == S_IFDIR {
+                    stack.append(child)
+                } else {
+                    let (sum, overflow) = total.addingReportingOverflow(Int64(st.st_size))
+                    total = overflow ? Int64.max : sum
+                }
+            }
+        }
+        return total
     }
 
     func cancel() {

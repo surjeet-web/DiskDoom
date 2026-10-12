@@ -1,10 +1,12 @@
 import SwiftUI
+import AppKit
 
 // MARK: - D5 App Lifecycle view
 
 struct AppLifecycleView: View {
     @EnvironmentObject var engine: AppLifecycleEngine
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var inventory: AppInventoryService
     @State private var filter: AppLifecycleEntry.LifecycleStatus? = nil
 
     private var rows: [AppLifecycleEntry] {
@@ -16,6 +18,9 @@ struct AppLifecycleView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("App Lifecycle").font(.title2.weight(.semibold))
+                    Text("How long since each installed app was last opened — recorded live when launches are observed. Abandoned apps (90+ days) are prime uninstall candidates.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     if !engine.abandoned.isEmpty {
                         Text("\(engine.abandoned.count) abandoned apps · \(ByteFormatting.format(engine.abandonedBytes))")
                             .font(.caption.monospacedDigit())
@@ -78,13 +83,15 @@ struct AppLifecycleView: View {
                             state.showCleanup = true
                         }
                     }
-                    Button("Reveal in Finder") { }
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.selectFile((entry.path as NSString).expandingTildeInPath, inFileViewerRootedAtPath: "")
+                    }
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
         }
-        .onAppear {
-            if engine.entries.isEmpty { engine.compute() }
+        .task(id: inventory.apps.count) {
+            engine.compute(apps: inventory.apps)
             engine.startLaunchWatcher()
         }
         .onDisappear { engine.stopLaunchWatcher() }
@@ -113,7 +120,8 @@ struct AppLifecycleView: View {
 
 #Preview {
     AppLifecycleView()
-        .environmentObject({ let e = AppLifecycleEngine(); e.compute(); return e }())
+        .environmentObject({ let e = AppLifecycleEngine(); e.compute(apps: []); return e }())
         .environmentObject(AppState())
+        .environmentObject(AppInventoryService())
         .frame(width: 800, height: 500)
 }

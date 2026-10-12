@@ -16,7 +16,7 @@ struct FullDiskAccessView: View {
                         state.onboardingStep = .welcome
                     }
                 }) {
-                state.limitedMode = true
+                state.refreshLimitedMode()
                 state.finishOnboarding()
             }
             Spacer()
@@ -67,7 +67,7 @@ struct FullDiskAccessView: View {
                     .font(.caption)
             }
             Button("Skip for now →") {
-                state.limitedMode = true
+                state.refreshLimitedMode()
                 state.finishOnboarding() // user folders only, no /Library
             }
             .buttonStyle(.link)

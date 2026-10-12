@@ -30,7 +30,8 @@ private final class WeakFileFeedMonitor: @unchecked Sendable {
 }
 
 // Confinement contract (why @unchecked Sendable is honest):
-// - `snapshots` is touched only on `stateQueue` (serial).
+// - `snapshots`, `dirtyPaths`, `drainScheduled`, `baselineReady` are touched
+//   only on `stateQueue` (serial).
 // - `events`, `isMonitoring`, `eventsPerMinute` are touched only on main.
 // - `sources` is touched on start/stop (main, from UI) and deinit
 //   (DispatchSource.cancel is thread-safe).
@@ -44,11 +45,25 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
     /// Snapshot state is confined to `stateQueue`; never touched elsewhere.
     private let stateQueue = DispatchQueue(label: "com.diskbuddy.filefeed.state", qos: .utility)
     private var snapshots: [String: [String: FileMeta]] = [:]
+    /// Paths whose directory changed but which haven't been re-scanned yet.
+    /// A single `mkdir` of 500 files fires hundreds of vnode events; without
+    /// coalescing each one re-`stat`ed the *entire* directory (thousands of
+    /// `attributesOfItem` calls), which is what made the UI stutter on real
+    /// hardware whenever a build tool dropped a batch of files.
+    private var dirtyPaths: Set<String> = []
+    private var drainScheduled = false
+    private var baselineReady = false
 
     private struct FileMeta {
         let mtime: TimeInterval
         let size: Int64
     }
+
+    /// Coalescing window for directory re-scans.
+    private static let coalesceInterval: TimeInterval = 0.25
+    /// Hard cap on entries snapshotted per directory — a huge ~/Downloads must
+    /// not turn one coalesced drain into its own stat storm.
+    private static let maxSnapshotEntries = 20_000
 
     let watchPaths: [String] = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -61,22 +76,21 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
     }()
 
     init() {
-        // Mock seed so the prototype UI is demonstrable before monitoring starts.
-        let now = Date()
-        events = [
-            FileFeedEvent(date: now, path: "\(watchPaths[0])/com.google.Chrome/Cache/data_3", isCreated: true, attributedApp: "com.google.Chrome"),
-            FileFeedEvent(date: now.addingTimeInterval(-40), path: "\(watchPaths[3])/installer-2.dmg", isCreated: true, attributedApp: nil),
-            FileFeedEvent(date: now.addingTimeInterval(-95), path: "\(watchPaths[2])/GoogleSoftwareUpdate/agent.log", isCreated: false, attributedApp: "GoogleSoftwareUpdate"),
-        ]
+        // No seed events: the feed only shows real observed activity.
     }
 
     func start() {
         guard sources.isEmpty else { return }
         // Baseline first so enabling monitoring doesn't flood with history.
-        stateQueue.sync {
-            for path in watchPaths {
-                snapshots[path] = snapshot(of: path)
+        // WHY async: `snapshot(of:)` stats every entry in the directory; run
+        // synchronously here it blocked the main thread for the whole of
+        // ~/Library/Caches + ~/Downloads and froze the launch UI.
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            for path in self.watchPaths {
+                self.snapshots[path] = self.snapshot(of: path)
             }
+            self.baselineReady = true
         }
         var started: [DispatchSourceFileSystemObject] = []
         let box = WeakFileFeedMonitor()
@@ -118,13 +132,34 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
 
     // MARK: Snapshot diff (confined to stateQueue)
 
+    /// Marks the path dirty and schedules ONE drain. The event handler itself
+    /// does no filesystem work.
     private func handleDirectoryChange(path: String) {
         stateQueue.async { [weak self] in
             guard let self else { return }
+            // A change arriving before the baseline landed would otherwise be
+            // reported as thousands of spurious "created" events.
+            guard self.baselineReady else { return }
+            self.dirtyPaths.insert(path)
+            guard !self.drainScheduled else { return }
+            self.drainScheduled = true
+            self.stateQueue.asyncAfter(deadline: .now() + Self.coalesceInterval) { [weak self] in
+                self?.drain()
+            }
+        }
+    }
+
+    /// Re-scans every dirty directory once, then diffs.
+    private func drain() {
+        drainScheduled = false
+        guard !dirtyPaths.isEmpty else { return }
+        let paths = dirtyPaths
+        dirtyPaths.removeAll()
+        var batch: [FileFeedEvent] = []
+        for path in paths {
             let old = snapshots[path] ?? [:]
             let current = snapshot(of: path)
             snapshots[path] = current
-            var batch: [FileFeedEvent] = []
             for (name, meta) in current {
                 let fullPath = (path as NSString).appendingPathComponent(name)
                 if old[name] == nil {
@@ -134,16 +169,17 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
                 }
                 if batch.count >= 20 { break }
             }
-            guard !batch.isEmpty else { return }
-            DispatchQueue.main.async { [weak self, batch] in
-                guard let self else { return }
-                events.insert(contentsOf: batch, at: 0)
-                if events.count > 500 {
-                    events = Array(events.prefix(500))
-                }
-                let cutoff = Date().addingTimeInterval(-60)
-                eventsPerMinute = events.filter { $0.date > cutoff }.count
+            if batch.count >= 20 { break }
+        }
+        guard !batch.isEmpty else { return }
+        DispatchQueue.main.async { [weak self, batch] in
+            guard let self else { return }
+            events.insert(contentsOf: batch, at: 0)
+            if events.count > 500 {
+                events = Array(events.prefix(500))
             }
+            let cutoff = Date().addingTimeInterval(-60)
+            eventsPerMinute = events.filter { $0.date > cutoff }.count
         }
     }
 
@@ -151,8 +187,9 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: dirPath) else { return [:] }
         var result: [String: FileMeta] = [:]
-        result.reserveCapacity(names.count)
-        for name in names {
+        result.reserveCapacity(min(names.count, Self.maxSnapshotEntries))
+        for (index, name) in names.enumerated() {
+            if index >= Self.maxSnapshotEntries { break }
             let full = (dirPath as NSString).appendingPathComponent(name)
             guard let attrs = try? fm.attributesOfItem(atPath: full) else { continue }
             let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0

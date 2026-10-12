@@ -7,7 +7,9 @@ struct AgeMapView: View {
     @State private var selectedBucket: AgeBucket? = nil
 
     private var buckets: [AgeBucket] { state.ageBuckets }
-    private var maxBytes: Int64 { buckets.map(\.bytes).max() ?? 1 }
+    // NaN guard: an all-zero bucket set makes `.max()` return 0 rather than
+    // nil, so `?? 1` never fires and `0/0` width reaches `.frame(width:)`.
+    private var maxBytes: Int64 { max(buckets.map(\.bytes).max() ?? 0, 1) }
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
@@ -16,53 +18,52 @@ struct AgeMapView: View {
                     .font(.headline)
                 Spacer()
             }
-            ScrollView {
-                VStack(spacing: DesignTokens.Space.s) {
-                    ForEach(buckets) { bucket in
-                        Button {
-                            selectedBucket = bucket
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(bucket.label)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                HStack {
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(bucket.color.opacity(selectedBucket?.id == bucket.id ? 1 : 0.75))
-                                        .frame(width: 200 * CGFloat(bucket.bytes) / CGFloat(maxBytes), height: 18)
-                                    Text(bucket.bytes.fileSizeString)
-                                        .font(.callout.monospacedDigit())
-                                    Spacer()
-                                    Text("\(bucket.files.formatted()) files")
+            if buckets.isEmpty {
+                EmptyState(symbol: "calendar", title: "Scan first", message: "Age distribution is computed from your real scan data.", actionTitle: "Start Scan (⌘R)", action: { state.startScan() })
+            } else {
+                ScrollView {
+                    VStack(spacing: DesignTokens.Space.s) {
+                        ForEach(buckets) { bucket in
+                            Button {
+                                selectedBucket = bucket
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(bucket.label)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                    HStack {
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(bucket.color.opacity(selectedBucket?.id == bucket.id ? 1 : 0.75))
+                                            .frame(width: 200 * CGFloat(bucket.bytes) / CGFloat(maxBytes), height: 18)
+                                        Text(bucket.bytes.fileSizeString)
+                                            .font(.callout.monospacedDigit())
+                                        Spacer()
+                                        Text("\(bucket.files.formatted()) files")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
+                                .padding(DesignTokens.Space.s)
+                                .background(selectedBucket?.id == bucket.id ? Color.accentColor.opacity(0.1) : .clear)
+                                .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
                             }
-                            .padding(DesignTokens.Space.s)
-                            .background(selectedBucket?.id == bucket.id ? Color.accentColor.opacity(0.1) : .clear)
-                            .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
+                            .buttonStyle(.plain)
+                            .help("\(bucket.label): \(bucket.bytes.fileSizeString) across \(bucket.files.formatted()) files")
                         }
-                        .buttonStyle(.plain)
-                        .help("\(bucket.label): \(bucket.bytes.fileSizeString) across \(bucket.files.formatted()) files")
                     }
                 }
-            }
-            if let bucket = selectedBucket {
-                Button("Show items in \(bucket.label)") {
-                    state.stage(source: "AgeMap", path: "Files older than \(bucket.label)", bytes: bucket.bytes)
-                    state.showCleanup = true
+                if let oldest = buckets.last(where: { $0.bytes > 0 }) {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("\(oldest.bytes.fileSizeString) hasn't been touched in \(oldest.label.lowercased()) — consider cleaning.")
+                            .font(.caption)
+                    }
+                    .padding(DesignTokens.Space.s)
+                    .background(.orange.opacity(0.1))
+                    .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
                 }
-                .buttonStyle(.borderedProminent)
             }
-            HStack {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text("48 GB hasn't been touched in 2+ years — consider cleaning.")
-                    .font(.caption)
-            }
-            .padding(DesignTokens.Space.s)
-            .background(.orange.opacity(0.1))
-            .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
         }
         .padding(DesignTokens.Space.m)
     }

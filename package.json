@@ -1,0 +1,23 @@
+{
+  "name": "diskbuddy-license-server",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate": "tsx scripts/generate.ts",
+    "seed": "tsx scripts/seed.ts",
+    "revoke": "tsx scripts/revoke.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.34.0"
+  }
+}

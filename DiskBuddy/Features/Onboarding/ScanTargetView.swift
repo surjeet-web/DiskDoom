@@ -6,8 +6,8 @@ import AppKit
 struct ScanTargetView: View {
     @EnvironmentObject var state: AppState
     @State private var selection: ScanTarget = .fullMac
-    @State private var includeSnapshots = false
     @State private var customFolder: URL? = nil
+    @State private var selectedExternalPath: String? = nil
     @State private var volumes: [(name: String, path: String, used: Int64, total: Int64)] = []
 
     enum ScanTarget: String, CaseIterable, Identifiable {
@@ -43,7 +43,7 @@ struct ScanTargetView: View {
                         state.onboardingStep = .fullDiskAccess
                     }
                 }) {
-                state.limitedMode = true
+                state.refreshLimitedMode()
                 state.finishOnboarding()
             }
             Text("What do you want to scan?")
@@ -54,13 +54,10 @@ struct ScanTargetView: View {
                 targetRow(.home, subtitle: "\(NSHomeDirectory()) and all user data. \(volumeUsed(NSHomeDirectory())) used")
                 targetRow(.folder, subtitle: customFolder?.path ?? "Pick any folder to analyze.")
                 ForEach(volumes, id: \.path) { volume in
-                    targetRow(.external, subtitle: "\(volume.path) — \(ByteFormatting.format(volume.used)) used of \(ByteFormatting.format(volume.total))")
+                    targetRow(.external, subtitle: "\(volume.path) — \(ByteFormatting.format(volume.used)) used of \(ByteFormatting.format(volume.total))", externalPath: volume.path)
                 }
             }
             .frame(width: 380)
-            Toggle("Include system snapshots (APFS/Time Machine)", isOn: $includeSnapshots)
-                .font(.caption)
-                .frame(width: 380, alignment: .leading)
             Spacer()
             Button("Start Scan") {
                 state.finishOnboarding()
@@ -68,6 +65,7 @@ struct ScanTargetView: View {
             }
             .accentCTA()
             .keyboardShortcut(.defaultAction)
+            .disabled(!canStartScan)
             Spacer()
         }
         .padding(DesignTokens.Space.xl)
@@ -75,10 +73,26 @@ struct ScanTargetView: View {
         .onAppear { loadVolumes() }
     }
 
-    private func targetRow(_ target: ScanTarget, subtitle: String) -> some View {
-        Button {
+    private var canStartScan: Bool {
+        switch selection {
+        case .folder: return customFolder != nil
+        case .external: return selectedExternalPath != nil
+        default: return true
+        }
+    }
+
+    private func targetRow(_ target: ScanTarget, subtitle: String, externalPath: String? = nil) -> some View {
+        let isSelected: Bool = {
+            if target == .external, let externalPath {
+                return selection == .external && selectedExternalPath == externalPath
+            }
+            return selection == target
+        }()
+        return Button {
             selection = target
-            if target == .folder { pickFolder() }
+            if target == .folder { pickFolder() } else if let externalPath {
+                selectedExternalPath = externalPath
+            }
         } label: {
             HStack(spacing: DesignTokens.Space.m) {
                 Image(systemName: target.symbol)
@@ -92,18 +106,19 @@ struct ScanTargetView: View {
                         .lineLimit(2)
                 }
                 Spacer()
-                Image(systemName: selection == target ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selection == target ? Color.accentColor : .secondary)
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
             }
             .padding(DesignTokens.Space.m)
             .background(.quaternary)
             .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
-                    .stroke(selection == target ? Color.accentColor : .clear, lineWidth: 2)
+                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2)
             )
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     private func pickFolder() {
@@ -111,8 +126,11 @@ struct ScanTargetView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK {
-            customFolder = panel.url
+        if panel.runModal() == .OK, let url = panel.url {
+            customFolder = url
+        } else if customFolder == nil {
+            // Cancelled with nothing chosen: fall back to a valid target.
+            selection = .fullMac
         }
     }
 
@@ -125,14 +143,10 @@ struct ScanTargetView: View {
         case .folder:
             if let folder = customFolder {
                 state.startRealScan(root: folder, label: folder.lastPathComponent)
-            } else {
-                state.startRealScan(root: FileManager.default.homeDirectoryForCurrentUser, label: "Home Folder")
             }
         case .external:
-            if let first = volumes.first {
-                state.startRealScan(root: URL(fileURLWithPath: first.path), label: first.name)
-            } else {
-                state.startRealScan(root: URL(fileURLWithPath: "/"), label: "Full Mac")
+            if let path = selectedExternalPath, let volume = volumes.first(where: { $0.path == path }) {
+                state.startRealScan(root: URL(fileURLWithPath: path), label: volume.name)
             }
         }
     }

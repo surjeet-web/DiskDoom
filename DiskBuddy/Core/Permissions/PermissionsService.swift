@@ -56,12 +56,17 @@ final class PermissionsService: ObservableObject, @unchecked Sendable {
     private func probeFullDiskAccess() -> Bool {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
+        // Only genuinely TCC-protected locations. Verified on hardware: these
+        // all return NSFileReadNoPermissionError without Full Disk Access.
+        // (Do not add unprotected paths here — a readable path makes the
+        // probe report "granted" when it isn't.)
         let candidates = [
             "\(home)/Library/Mail",
             "\(home)/Library/Safari",
             "\(home)/Library/Messages",
             "/Library/Application Support/com.apple.TCC",
         ]
+        var sawDenial = false
         for path in candidates {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue } // ENOENT: inconclusive
@@ -73,10 +78,35 @@ final class PermissionsService: ObservableObject, @unchecked Sendable {
                 }
                 return true // readable → FDA granted
             } catch let error as NSError {
-                // EPERM/EACCES = blocked; anything else = inconclusive, try next.
-                if error.code != EPERM && error.code != EACCES { continue }
+                if isPermissionDenied(error) { sawDenial = true }
+                // anything else = inconclusive, try the next candidate
             }
         }
+        // Every existing candidate was explicitly denied (or the probe was
+        // inconclusive) → not granted. Either way we must not claim access.
+        _ = sawDenial
+        return false
+    }
+
+    /// NSError permission detection.
+    ///
+    /// The old code compared `error.code` against `EPERM` (1) and `EACCES`
+    /// (13). But `FileManager.contentsOfDirectory` throws an **NSCocoaErrorDomain**
+    /// error with code `NSFileReadNoPermissionError` = 257 — a value that
+    /// matched neither, so a genuine denial was silently classified
+    /// "inconclusive" and the probe only ever returned `false` by exhausting
+    /// its candidate list.
+    private func isPermissionDenied(_ error: NSError) -> Bool {
+        if error.domain == NSPOSIXErrorDomain {
+            return error.code == EPERM || error.code == EACCES
+        }
+        if error.domain == NSCocoaErrorDomain {
+            return error.code == NSFileReadNoPermissionError
+                || error.code == NSFileWriteNoPermissionError
+        }
+        // Fall back to the underlying POSIX code when present.
+        let underlying = (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code
+        if let underlying { return underlying == EPERM || underlying == EACCES }
         return false
     }
 }

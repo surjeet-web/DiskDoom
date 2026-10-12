@@ -6,6 +6,7 @@ struct MainWindowView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var topology: DiskTopologyService
     @EnvironmentObject var coordinator: LaunchCoordinator
+    @EnvironmentObject var inventory: AppInventoryService
     @State private var dropTargeted = false
 
     var body: some View {
@@ -19,7 +20,7 @@ struct MainWindowView: View {
                         NotificationBannerView(banner: banner)
                     }
                     // §31A: limited-mode notice when FDA was skipped.
-                    if state.limitedMode && state.scanPhase != .scanning {
+                    if (state.limitedMode || !state.permissions.fdaGranted) && state.scanPhase != .scanning {
                         HStack {
                             Image(systemName: "lock.fill").foregroundStyle(.orange)
                             Text("Limited mode — Full Disk Access not granted.")
@@ -39,6 +40,7 @@ struct MainWindowView: View {
                     }
                     ZStack {
                         detailContent
+                            .animation(.easeOut(duration: 0.18), value: state.sidebarTab)
                         // §33 drag-and-drop overlay.
                         if dropTargeted {
                             RoundedRectangle(cornerRadius: DesignTokens.Radius.l)
@@ -124,7 +126,7 @@ struct MainWindowView: View {
             CleanupQueueSheet().environmentObject(state)
         }
         .sheet(item: $state.uninstallApp) { app in
-            UninstallSheet(app: app).environmentObject(state)
+            UninstallSheet(app: app).environmentObject(state).environmentObject(inventory)
         }
         .sheet(item: $state.quickLookNode) { node in
             QuickLookSheet(node: node).environmentObject(state)
@@ -172,10 +174,20 @@ struct MainWindowView: View {
                         .tag(tab)
                 }
             }
+            Section("Professional") {
+                ForEach(AppState.SidebarTab.professional, id: \.self) { tab in
+                    Label(tab.title, systemImage: tab.symbol)
+                        .tag(tab)
+                }
+            }
             Section("Favorites") {
-                Label("/Applications", systemImage: "app.badge").font(.caption)
-                Label("~/Downloads", systemImage: "tray.and.arrow.down").font(.caption)
-                Label("~/Library", systemImage: "folder").font(.caption)
+                // These three were bare `Label`s with no `.tag(...)`, so they rendered
+                // exactly like the real navigation rows above but selected nothing and
+                // navigated nowhere — dead UI that read as broken. Now they are real
+                // buttons that route to the Folders tab.
+                favoriteShortcut("/Applications", symbol: "app.badge")
+                favoriteShortcut("~/Downloads", symbol: "tray.and.arrow.down")
+                favoriteShortcut("~/Library", symbol: "folder")
             }
             Section("Volumes") {
                 Text("\(topology.dataVolumeName) — \(ByteFormatting.format(max(0, topology.dataTotalBytes - topology.dataFreeBytes))) / \(ByteFormatting.format(topology.dataTotalBytes))")
@@ -230,6 +242,19 @@ struct MainWindowView: View {
         }
     }
 
+    /// Sidebar row that jumps to the Folders tab. Uses a real `Button` (not a
+    /// bare `Label`) because the sidebar is a `List(selection:)`: an untagged
+    /// `Label` is selectable-looking but does nothing on click.
+    private func favoriteShortcut(_ title: String, symbol: String) -> some View {
+        Button {
+            state.sidebarTab = .folders
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.caption)
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: Detail content per tab + scan phase
 
     @ViewBuilder
@@ -247,16 +272,22 @@ struct MainWindowView: View {
                 action: { state.startScan() }
             )
         } else {
-            switch state.sidebarTab {
-            case .explore:
+            Group {
+                switch state.sidebarTab {
+                case .explore:
                 VStack(spacing: 0) {
+                    OverviewStrip()
+                        .environmentObject(state)
+                        .environmentObject(topology)
                     // 12-view switcher lives here (not the toolbar — a 12-segment
                     // control doesn't fit window chrome at 1100pt).
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: DesignTokens.Space.xs) {
                             ForEach(AppState.ExploreView.allCases, id: \.self) { view in
                                 Button {
-                                    state.exploreView = view
+                                    withAnimation(.easeOut(duration: 0.15)) {
+                                        state.exploreView = view
+                                    }
                                 } label: {
                                     Label(view.title, systemImage: view.symbol)
                                         .font(.caption)
@@ -309,7 +340,13 @@ struct MainWindowView: View {
             case .smartClean: SmartCleanView()
             case .storage: StorageView()
             case .folders: FolderExplorerView()
+            case .developer: DeveloperWorkspaceView()
+            case .pro3D: Pro3DCacheView()
+            case .videoEditor: VideoEditorCacheView()
+                }
             }
+            .id(state.sidebarTab) // identity per tab: transition animates on switch
+            .transition(AnyTransition.opacity.combined(with: .move(edge: .trailing)))
         }
     }
 
@@ -336,6 +373,104 @@ struct MainWindowView: View {
         }
         .padding(.horizontal, DesignTokens.Space.m)
         .padding(.vertical, DesignTokens.Space.xs)
+    }
+}
+
+// MARK: - Overview strip: live disk widget on the Explore tab (all real data)
+
+private struct OverviewStrip: View {
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var topology: DiskTopologyService
+
+    private var usedPercent: Double {
+        let total = max(topology.dataTotalBytes, 1)
+        return min(100, max(0, Double(total - topology.dataFreeBytes) / Double(total) * 100))
+    }
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Space.m) {
+            // Disk usage ring.
+            HStack(spacing: DesignTokens.Space.s) {
+                ZStack {
+                    Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 6)
+                        .frame(width: 46, height: 46)
+                    Circle()
+                        .trim(from: 0, to: usedPercent / 100)
+                        .stroke(usedPercent > 90 ? Color.red : usedPercent > 75 ? Color.orange : Color.green,
+                                style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 46, height: 46)
+                    Text("\(Int(usedPercent))")
+                        .font(.caption2.weight(.bold).monospacedDigit())
+                }
+                .accessibleProgress(
+                    value: usedPercent / 100,
+                    label: "Disk usage: \(ByteFormatting.format(max(0, topology.dataTotalBytes - topology.dataFreeBytes))) used of \(ByteFormatting.format(topology.dataTotalBytes))")
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(topology.dataVolumeName).font(.caption.weight(.semibold))
+                    Text("\(ByteFormatting.format(topology.dataFreeBytes)) free")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Divider().frame(height: 34)
+            // Largest folder from the real scan.
+            if let biggest = state.effectiveTopLevel.max(by: { $0.sizeBytes < $1.sizeBytes }), biggest.sizeBytes > 0 {
+                stat(icon: "folder.fill", tint: biggest.category.color,
+                     label: "Biggest", value: "\(biggest.name) · \(biggest.sizeString)")
+            }
+            // Reclaimable (staged queue or cleanable categories).
+            if let root = state.scanRoot {
+                let cleanable = root.children
+                    .filter { $0.category == .caches || $0.category == .logs || $0.category == .stale }
+                    .reduce(Int64(0)) { $0 + $1.sizeBytes }
+                stat(icon: "sparkles", tint: .purple,
+                     label: "Cleanable", value: ByteFormatting.format(cleanable))
+            }
+            // Last scan freshness.
+            if let last = state.lastScanDate {
+                stat(icon: "clock.arrow.circlepath", tint: .blue,
+                     label: "Last scan", value: last.formatted(.relative(presentation: .named)))
+            }
+            Spacer()
+            // Quick actions.
+            HStack(spacing: DesignTokens.Space.s) {
+                Button {
+                    state.sidebarTab = .smartClean
+                } label: {
+                    Label("Smart Clean", systemImage: "wand.and.stars")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button {
+                    state.showCleanup = true
+                } label: {
+                    Label("Queue (\(state.cleanupItems.count))", systemImage: "trash")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(state.cleanupItems.isEmpty)
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.m)
+        .padding(.vertical, DesignTokens.Space.s)
+        .background(.quaternary.opacity(0.35))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func stat(icon: String, tint: Color, label: String, value: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.caption2).foregroundStyle(.secondary)
+                Text(value).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle)
+            }
+        }
+        .help(value)
     }
 }
 
@@ -417,33 +552,67 @@ private struct InspectorView: View {
                         specRow("Modified", value: modified.formatted(date: .abbreviated, time: .omitted))
                     }
                     specRow("Category", value: node.category.label)
-                    if node.category == .applications {
-                        // §14 application extras.
-                        specRow("Bundle Size", value: (node.sizeBytes / 3).fileSizeString)
-                        specRow("Artifacts Size", value: (node.sizeBytes * 2 / 3).fileSizeString)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Cleanup options").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Text("● Uninstall (all)").font(.caption)
-                            Text("○ Clean artifacts only").font(.caption).foregroundStyle(.secondary)
-                            Text("○ Select specific…").font(.caption).foregroundStyle(.secondary)
+                    if let app = state.selectedApp, app.name == node.name || app.bundlePath == node.path {
+                        // §14 real application breakdown.
+                        specRow("Bundle Size", value: app.bundleBytes.fileSizeString)
+                        specRow("Artifacts Size", value: app.artifactBytes.fileSizeString)
+                        Text("Artifacts (\(app.artifacts.count))").font(.headline)
+                        ForEach(app.artifacts.prefix(10), id: \.path) { artifact in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(shortInspectorPath(artifact.path)).font(.caption).lineLimit(1).truncationMode(.middle)
+                                    Text(artifact.kind).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(artifact.bytes.fileSizeString)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                Button("Stage") {
+                                    state.stage(source: "Inspector", path: artifact.path, bytes: artifact.bytes)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                            }
+                        }
+                        HStack {
+                            Button(app.isStale ? "Remove Leftovers" : "Uninstall…") {
+                                state.uninstallApp = app
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                            .controlSize(.small)
+                            Button("Clean Artifacts") {
+                                for artifact in app.artifacts {
+                                    state.stage(source: "Inspector", path: artifact.path, bytes: artifact.bytes)
+                                }
+                                state.showCleanup = true
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(app.artifacts.isEmpty)
                         }
                     }
                     if !node.children.isEmpty {
-                        Text("Breakdown").font(.headline)
-                        ForEach(node.children.prefix(7), id: \.id) { child in
+                        Text("Breakdown (\(node.children.count) items)").font(.headline)
+                        ForEach(node.children.sorted { $0.sizeBytes > $1.sizeBytes }, id: \.id) { child in
                             HStack {
                                 RoundedRectangle(cornerRadius: 3)
                                     .fill(child.category.color)
                                     .frame(width: 10, height: 10)
-                                Text(child.name).font(.caption).lineLimit(1)
+                                Text(child.name).font(.caption).lineLimit(1).truncationMode(.middle)
                                 Spacer()
                                 Text(child.sizeString)
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
+                            .contentShape(Rectangle())
+                            .onTapGesture { state.selectedNode = child }
+                            .help(child.path)
                         }
                     }
-                    Button("Reveal in Finder") { }
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.selectFile((node.path as NSString).expandingTildeInPath, inFileViewerRootedAtPath: "")
+                    }
                         .buttonStyle(.bordered)
                     Button("Stage for Cleanup") {
                         state.stage(source: "Inspector", path: node.path, bytes: node.sizeBytes)
@@ -476,5 +645,11 @@ private struct InspectorView: View {
             Spacer()
             Text(value).font(.caption.monospacedDigit())
         }
+    }
+
+    private func shortInspectorPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) { return "~" + path.dropFirst(home.count) }
+        return path
     }
 }

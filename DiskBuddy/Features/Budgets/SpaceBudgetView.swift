@@ -4,6 +4,7 @@ import SwiftUI
 
 struct SpaceBudgetView: View {
     @EnvironmentObject var engine: SpaceBudgetEngine
+    @EnvironmentObject var state: AppState
     @State private var showingAdd = false
 
     var body: some View {
@@ -18,7 +19,9 @@ struct SpaceBudgetView: View {
             }
             .padding(DesignTokens.Space.m)
             Divider()
-            if engine.statuses.isEmpty {
+            if state.records.isEmpty {
+                EmptyState(symbol: "gauge.with.dots.needle.33percent", title: "Scan first to track budgets", message: "Budgets are checked against your real usage per category. Run a scan, then add limits for caches, logs, apps and more.")
+            } else if engine.statuses.isEmpty {
                 EmptyState(symbol: "gauge.with.dots.needle.33percent", title: "No budgets set", message: "Set limits for caches, logs, and other categories. DiskDoom will alert you when they're exceeded.", actionTitle: "Add Your First Budget", action: { showingAdd = true })
             } else {
                 ScrollView {
@@ -34,6 +37,15 @@ struct SpaceBudgetView: View {
         .sheet(isPresented: $showingAdd) {
             AddBudgetSheet()
                 .environmentObject(engine)
+        }
+        // WHY: the old id was `state.records.count`, which changes on EVERY streamed
+        // batch during cache hydration (~1M records / 20k batches ≈ 50 passes).
+        // Each pass walked the whole index on the main actor. `-1` while the
+        // scan isn't finished means "not ready" and the task is simply skipped.
+        .task(id: state.scanPhase == .done ? state.records.count : -1) {
+            guard state.scanPhase == .done, !state.records.isEmpty else { return }
+            let dupBytes = state.dupFinder.sets.reduce(Int64(0)) { $0 + $1.reclaimable }
+            engine.evaluate(records: state.records, duplicateBytes: dupBytes)
         }
     }
 }

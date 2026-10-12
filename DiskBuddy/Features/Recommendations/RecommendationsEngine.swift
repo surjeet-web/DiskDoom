@@ -23,47 +23,74 @@ final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
     var largeThreshold: Int64 = 100_000_000
     var oldMonths = 6
 
+    /// The view only ever renders this many rows, so anything beyond it is
+    /// sorting work nobody sees. Previously the whole (up to 1M record) index
+    /// was filtered 5× and fully sorted 2× on the main actor on every appear.
+    private static let maxResults = 500
+
     func compute(records: [ScannedRecord]) {
-        let files = records.filter { !$0.isDirectory }
-        // Large files (64).
-        largeFiles = files.filter { $0.bytes >= largeThreshold }.sorted { $0.bytes > $1.bytes }
-        // Old files (65): unmodified for oldMonths+.
         let cutoff = Date().addingTimeInterval(-Double(oldMonths) * 30 * 86_400)
-        oldFiles = files.filter { $0.modified < cutoff }.sorted { $0.bytes > $1.bytes }
+
+        // ── Single pass over the index ──
+        var large: [ScannedRecord] = []
+        var old: [ScannedRecord] = []
+        var stale: [ScannedRecord] = []
+        var caches: [ScannedRecord] = []
+        var logs: [ScannedRecord] = []
+        var staleBytes: Int64 = 0
+        var cacheBytes: Int64 = 0
+        var logBytes: Int64 = 0
+
+        for record in records where !record.isDirectory {
+            let bytes = record.bytes
+            let isOld = record.modified < cutoff
+            if bytes >= largeThreshold { large.append(record) }
+            if isOld { old.append(record) }
+            switch record.category {
+            case .stale: stale.append(record); staleBytes += bytes
+            case .caches: caches.append(record); cacheBytes += bytes
+            case .logs where isOld: logs.append(record); logBytes += bytes
+            default: break
+            }
+        }
+
+        // ── One bounded sort (descending by size) per result list ──
+        large.sort { $0.bytes > $1.bytes }
+        old.sort { $0.bytes > $1.bytes }
+        largeFiles = Array(large.prefix(Self.maxResults))
+        oldFiles = Array(old.prefix(Self.maxResults))
 
         var recs: [Recommendation] = []
         // Stale artifacts first (safest).
-        let stale = files.filter { $0.category == .stale }
         if !stale.isEmpty {
             recs.append(Recommendation(
                 title: "Remove stale files from uninstalled apps",
                 detail: "\(stale.count.formatted()) orphaned files can never be used again.",
-                bytes: stale.reduce(0) { $0 + $1.bytes },
+                bytes: staleBytes,
                 confidence: .highlyRecommended,
-                paths: stale.sorted { $0.bytes > $1.bytes }.prefix(50).map { ($0.path, $0.bytes) }))
+                paths: Self.topPaths(stale, limit: 50)))
         }
         // Big caches.
-        let caches = files.filter { $0.category == .caches }.sorted { $0.bytes > $1.bytes }
         if !caches.isEmpty {
+            caches.sort { $0.bytes > $1.bytes }
             recs.append(Recommendation(
                 title: "Clean large app caches",
                 detail: "Caches regenerate automatically; clearing never breaks apps.",
-                bytes: caches.prefix(100).reduce(0) { $0 + $1.bytes },
+                bytes: cacheBytes,
                 confidence: .highlyRecommended,
-                paths: caches.prefix(100).map { ($0.path, $0.bytes) }))
+                paths: Self.topPaths(caches, limit: 100)))
         }
         // Old logs.
-        let logs = files.filter { $0.category == .logs && $0.modified < cutoff }
         if !logs.isEmpty {
             recs.append(Recommendation(
                 title: "Clear old log files",
                 detail: "Logs older than \(oldMonths) months are diagnostic history only.",
-                bytes: logs.reduce(0) { $0 + $1.bytes },
+                bytes: logBytes,
                 confidence: .recommended,
-                paths: logs.sorted { $0.bytes > $1.bytes }.prefix(50).map { ($0.path, $0.bytes) }))
+                paths: Self.topPaths(logs, limit: 50)))
         }
-        // Forgotten large files.
-        let forgotten = oldFiles.filter { $0.bytes >= largeThreshold }
+        // Forgotten large files (old AND large).
+        let forgotten = old.filter { $0.bytes >= largeThreshold }
         if !forgotten.isEmpty {
             recs.append(Recommendation(
                 title: "Review forgotten large files",
@@ -73,6 +100,12 @@ final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
                 paths: forgotten.prefix(20).map { ($0.path, $0.bytes) }))
         }
         recommendations = recs
+    }
+
+    /// Largest `limit` (path, bytes) pairs. Input must already be sorted
+    /// descending by size — this deliberately does not re-sort.
+    private static func topPaths(_ records: [ScannedRecord], limit: Int) -> [(path: String, bytes: Int64)] {
+        records.prefix(limit).map { ($0.path, $0.bytes) }
     }
 
     var quickCleanBytes: Int64 {

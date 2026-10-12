@@ -14,7 +14,9 @@ struct RadialView: View {
             GeometryReader { proxy in
                 let size = proxy.size
                 let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                let outerR = min(size.width, size.height) / 2 - 8
+                // Clamp: a short/collapsed window makes the raw value negative,
+                // and `Path.addArc` with a negative radius produces garbage paths.
+                let outerR = max(4, min(size.width, size.height) / 2 - 8)
                 Canvas { context, _ in
                     drawRing(context: &context, nodes: ring1, total: root.sizeBytes, center: center, inner: outerR * 0.3, outer: outerR * 0.62)
                     let ring2Total = ring1.reduce(0) { $0 + $1.sizeBytes }

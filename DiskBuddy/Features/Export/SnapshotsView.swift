@@ -32,7 +32,9 @@ struct SnapshotsView: View {
                 }
             }
             if state.snapshots.isEmpty {
-                EmptyState(symbol: "camera", title: "No snapshots yet", message: "Snapshots save automatically after each scan (or save manually). They persist as compressed JSON in Application Support.")
+                EmptyState(symbol: "camera", title: "No snapshots yet", message: state.autoSaveSnapshots
+                           ? "Snapshots save automatically after each scan (or save manually). They persist as JSON in Application Support."
+                           : "Auto-save is off — use Save Current Scan to persist a snapshot. They are stored as JSON in Application Support.")
             } else {
                 ScrollView {
                     LazyVStack(spacing: DesignTokens.Space.m) {
@@ -42,7 +44,7 @@ struct SnapshotsView: View {
                     }
                 }
             }
-            Text("Storage: \(state.snapshots.count) snapshots · Auto-save: After each scan · Retention: \(state.snapshotRetention)")
+            Text("Storage: \(state.snapshots.count) snapshots · Auto-save: \(state.autoSaveSnapshots ? "After each scan" : "Manual") · Retention: \(state.snapshotRetention)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

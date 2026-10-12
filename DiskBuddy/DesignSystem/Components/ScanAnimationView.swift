@@ -58,8 +58,8 @@ struct ScanAnimationView: View {
         for i in 0..<tickCount {
             let base = Double(i) / Double(tickCount) * 2 * .pi + time * (2 * .pi / 12)
             let inner = radius - 5
-            let p1 = CGPoint(x: center.x + cos(base) * inner, y: center.y + sin(base) * inner)
-            let p2 = CGPoint(x: center.x + cos(base) * radius, y: center.y + sin(base) * radius)
+            let p1 = CGPoint(x: center.x + CGFloat(cos(base)) * inner, y: center.y + CGFloat(sin(base)) * inner)
+            let p2 = CGPoint(x: center.x + CGFloat(cos(base)) * radius, y: center.y + CGFloat(sin(base)) * radius)
             var path = Path()
             path.move(to: p1)
             path.addLine(to: p2)
@@ -106,7 +106,7 @@ struct ScanAnimationView: View {
         wedge.move(to: center)
         wedge.addArc(center: center, radius: radius, startAngle: Angle(radians: angle - spread), endAngle: Angle(radians: angle), clockwise: false)
         wedge.closeSubpath()
-        let tip = CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+        let tip = CGPoint(x: center.x + CGFloat(cos(angle)) * radius, y: center.y + CGFloat(sin(angle)) * radius)
         context.fill(
             wedge,
             with: .radialGradient(

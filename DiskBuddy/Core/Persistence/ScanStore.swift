@@ -17,8 +17,11 @@ struct StoredSnapshot: Codable {
 }
 
 enum ScanStore {
+    /// Test hook: redirect snapshot storage (unit tests use a temp directory).
+    static var directoryOverride: URL?
+
     private static var baseURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        directoryOverride ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/DiskBuddy", isDirectory: true)
     }
 
@@ -45,10 +48,7 @@ enum ScanStore {
         loaded.sort { $0.date > $1.date }
         // Prune beyond retention.
         if loaded.count > retention {
-            for extra in loaded[retention...] {
-                let name = "snapshot-\(Int(extra.date.timeIntervalSince1970)).json"
-                try? fm.removeItem(at: snapshotsURL.appendingPathComponent(name))
-            }
+            for extra in loaded[retention...] { removeSnapshot(date: extra.date) }
             loaded = Array(loaded.prefix(retention))
         }
         return loaded.map {
@@ -61,17 +61,34 @@ enum ScanStore {
         try? fm.createDirectory(at: snapshotsURL, withIntermediateDirectories: true)
         let stored = StoredSnapshot(date: date, label: label, target: target, totalBytes: totalBytes, files: files, topDirs: topDirs)
         guard let data = try? JSONEncoder().encode(stored) else { return }
-        let url = snapshotsURL.appendingPathComponent("snapshot-\(Int(date.timeIntervalSince1970)).json")
-        try? data.write(to: url)
+        let stamp = Int(date.timeIntervalSince1970 * 1_000_000_000)
+        var url = snapshotsURL.appendingPathComponent("snapshot-\(stamp).json")
+        var attempt = 1
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = snapshotsURL.appendingPathComponent("snapshot-\(stamp)-\(attempt).json")
+            attempt += 1
+        }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    static func removeSnapshot(date: Date) {
+        let prefix = "snapshot-\(Int(date.timeIntervalSince1970))"
+        guard let files = try? FileManager.default.contentsOfDirectory(at: snapshotsURL, includingPropertiesForKeys: nil) else { return }
+        for file in files where file.lastPathComponent.hasPrefix(prefix) && file.pathExtension == "json" {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     /// Look up stored top-dir sizes for comparison (nil if snapshot predates storage).
     static func topDirs(for snapshot: Snapshot) -> [String: Int64]? {
-        let url = snapshotsURL.appendingPathComponent("snapshot-\(Int(snapshot.date.timeIntervalSince1970)).json")
-        guard let data = try? Data(contentsOf: url),
-              let stored = try? JSONDecoder().decode(StoredSnapshot.self, from: data)
-        else { return nil }
-        return stored.topDirs
+        guard let files = try? FileManager.default.contentsOfDirectory(at: snapshotsURL, includingPropertiesForKeys: nil) else { return nil }
+        let prefix = "snapshot-\(Int(snapshot.date.timeIntervalSince1970))"
+        for file in files where file.lastPathComponent.hasPrefix(prefix) && file.pathExtension == "json" {
+            if let data = try? Data(contentsOf: file), let stored = try? JSONDecoder().decode(StoredSnapshot.self, from: data) {
+                return stored.topDirs
+            }
+        }
+        return nil
     }
 }
 

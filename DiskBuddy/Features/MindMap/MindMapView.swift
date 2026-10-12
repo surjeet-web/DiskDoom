@@ -43,9 +43,46 @@ struct MindMapView: View {
         }
     }
 
+    /// One column of the map. `depth` used to be ignored, so every node rendered
+    /// at the same indent and the map looked like an undifferentiated row — now
+    /// each level indents by 12pt and draws its siblings and a connector line.
     private func mindColumn(node: ScanNode, depth: Int, totalWidth: CGFloat) -> some View {
-        VStack(spacing: DesignTokens.Space.s) {
+        let children = node.children.sorted { $0.sizeBytes > $1.sizeBytes }
+        return VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
             mindNode(node, width: 170)
+                // Connector into the parent column so depth is legible.
+                .padding(.leading, CGFloat(depth) * 12)
+                .overlay(alignment: .leading) {
+                    if depth > 0 {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.35))
+                            .frame(width: 1, height: 20)
+                            .offset(x: -6, y: -6)
+                    }
+                }
+            if !children.isEmpty {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+                    ForEach(children, id: \.id) { child in
+                        mindNode(child, width: 170)
+                            .onTapGesture { state.selectedNode = child }
+                            .onTapGesture(count: 2) {
+                                path.append(child)
+                                state.selectedNode = child
+                            }
+                            .contextMenu {
+                                Button("Focus") { path.append(child) }
+                                if child.isActionable {
+                                    Button("Stage for Cleanup") {
+                                        state.stage(source: "MindMap", path: child.path, bytes: child.sizeBytes)
+                                    }
+                                } else {
+                                    Text("Aggregated items — not a real folder").font(.caption)
+                                }
+                            }
+                    }
+                }
+                .padding(.leading, 12)
+            }
         }
     }
 
@@ -71,8 +108,12 @@ struct MindMapView: View {
                     }
                     .contextMenu {
                         Button("Focus") { path.append(child) }
-                        Button("Stage for Cleanup") {
-                            state.stage(source: "MindMap", path: child.path, bytes: child.sizeBytes)
+                        if child.isActionable {
+                            Button("Stage for Cleanup") {
+                                state.stage(source: "MindMap", path: child.path, bytes: child.sizeBytes)
+                            }
+                        } else {
+                            Text("Aggregated items — not a real folder").font(.caption)
                         }
                     }
             }

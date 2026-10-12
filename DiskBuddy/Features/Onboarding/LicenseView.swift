@@ -73,8 +73,6 @@ struct LicenseView: View {
                 .accentCTA()
                 .keyboardShortcut(.defaultAction)
                 .disabled(store.isWorking)
-                Button("Purchase License") { }
-                    .buttonStyle(.bordered)
                 if store.trialDaysLeft > 0 {
                     Text("Trial: \(store.trialDaysLeft) days remaining (full features)")
                         .font(.caption)

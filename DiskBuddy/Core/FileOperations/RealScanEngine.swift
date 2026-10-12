@@ -195,13 +195,23 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         guard visited.insert(identity).inserted else { return nil } // already walked
         dirCount += 1
         if dirCount % 25 == 0 { progress(path, counter) }
-        // Packages are leaves: measure the bundle total, never descend.
-        // (Fixes bundles previously reporting ~0 bytes.)
+        // Packages are leaves in the tree, but they must still be *measured*
+        // correctly. `URLResourceValues.totalFileSizeKey` returns nil for any
+        // directory, so the old lookup reported every application bundle as
+        // 0 bytes (verified: Xcode.app = 5.5 GB measured as nil -> 0).
+        // Walk the bundle instead, including nested bundles, so Xcode.app
+        // reports ~5.5 GB rather than just its wrapper.
         let isPackage = resourceValues?.isPackage ?? false
         if isPackage {
-            let size = totalLogicalSize(url: url)
+            let measured = measurePackage(url: url, options: options,
+                                          skipped: &skipped, startedAt: startedAt)
             counter += 1
-            return ScanNode(name: name, path: path, sizeBytes: size, category: .applications, fileCount: 1, modified: fileMeta(path: path).mtime, physicalBytes: size)
+            return ScanNode(name: name, path: path, sizeBytes: measured.bytes,
+                            category: .applications, fileCount: measured.files,
+                            modified: fileMeta(path: path).mtime,
+                            physicalBytes: measured.bytes,
+                            isCollapsed: true,
+                            collapseReason: "Application bundle — double-click to index")
         }
         // Smart leaves: aggregate totals with a record-free lstat walk.
         if options.collapseSmartLeaves, depth > 0 {
@@ -236,10 +246,10 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         for child in children {
             if Task.isCancelled { break }
             let childPath = child.path
-            if options.excludedPaths.contains(where: { childPath.hasPrefix($0) }) { continue }
+            if options.excludedPaths.contains(where: { childPath == $0 || childPath.hasPrefix($0 + "/") }) { continue }
             if let childNode = scanDir(url: child, name: child.lastPathComponent, path: childPath, depth: depth + 1, options: options, records: &records, skipped: &skipped, counter: &counter, dirCount: &dirCount, visited: &visited, budgetHit: &budgetHit, startedAt: startedAt, progress: progress) {
                 nodes.append(childNode)
-                total += childNode.sizeBytes
+                total = Self.saturatingAdd(total, childNode.sizeBytes)
                 fileCount += childNode.fileCount
             }
         }
@@ -247,10 +257,18 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         nodes.sort { $0.sizeBytes > $1.sizeBytes }
         if nodes.count > options.maxChildrenPerDir {
             let tail = nodes[options.maxChildrenPerDir...]
-            let tailBytes = tail.reduce(0) { $0 + $1.sizeBytes }
+            let tailBytes = tail.reduce(Int64(0)) { Self.saturatingAdd($0, $1.sizeBytes) }
             let tailFiles = tail.reduce(0) { $0 + $1.fileCount }
             nodes = Array(nodes.prefix(options.maxChildrenPerDir))
-            nodes.append(ScanNode(name: "Other (\(tail.count) items)", path: path, sizeBytes: tailBytes, category: .other, fileCount: tailFiles))
+            // This node represents a *tail*, not a real directory. It must
+            // never carry the parent's `path` for destructive actions —
+            // staging it used to trash the entire parent folder while the UI
+            // showed only the tail's size.
+            nodes.append(ScanNode(
+                name: "Other (\(tail.count) items)", path: "",
+                sizeBytes: tailBytes, category: .other, fileCount: tailFiles,
+                collapseReason: "\(tail.count) aggregated items — not a real folder",
+                isSyntheticAggregate: true))
         }
         let mtime = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date
         return ScanNode(name: name, path: path, sizeBytes: total, category: classify(path: path), fileCount: fileCount, children: nodes, modified: mtime, physicalBytes: total)
@@ -301,7 +319,7 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
                 url: child, options: options, visited: &visited,
                 counter: &counter, skipped: &skipped,
                 budgetHit: &budgetHit, startedAt: startedAt, progress: progress)
-            bytes += sub.bytes
+            bytes = Self.saturatingAdd(bytes, sub.bytes)
             files += sub.files
             if files % 5000 == 0 { progress(url.path, counter) }
         }
@@ -330,9 +348,64 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         return (node.children, records)
     }
 
-    /// Recursive logical size for package leaves (no enumeration of objects).
-    private func totalLogicalSize(url: URL) -> Int64 {
-        (try? url.resourceValues(forKeys: [.totalFileSizeKey]))?.totalFileSize.map(Int64.init) ?? 0
+    /// Logical size + file count for a package bundle (`.app`, `.framework`,
+    /// `.prefPane`, `.kext`, …).
+    ///
+    /// Uses an explicit work stack rather than recursion so a pathological
+    /// bundle cannot overflow the cooperative-pool stack, and saturating
+    /// arithmetic so a sparse file reporting `st_size == Int64.max` cannot
+    /// trap the process. Deliberately emits no `ScannedRecord`s: indexing
+    /// every file inside every app would blow up the record store for no
+    /// benefit, since a bundle is presented as a single leaf.
+    private func measurePackage(
+        url: URL, options: ScanOptions, skipped: inout [String], startedAt: Date
+    ) -> (bytes: Int64, files: Int) {
+        var bytes: Int64 = 0
+        var files = 0
+        var stack: [URL] = [url]
+        var visitedEntries = 0
+        var truncated = false
+        // Bounded by time and entry count so one huge bundle cannot consume
+        // the whole scan budget without saying so.
+        let entryCap = 400_000
+        while let next = stack.popLast() {
+            if Task.isCancelled { truncated = true; break }
+            visitedEntries += 1
+            if visitedEntries > entryCap
+                || Date().timeIntervalSince(startedAt) > options.maxScanSeconds {
+                truncated = true
+                break
+            }
+            var st = stat()
+            guard lstat(next.path, &st) == 0 else { continue }
+            if (st.st_mode & S_IFMT) == S_IFDIR {
+                // NOTE: deliberately no `.skipsPackageDescendants` here —
+                // skipping it would miss the nested frameworks/helpers that
+                // make up most of a modern app bundle's size.
+                var opts: FileManager.DirectoryEnumerationOptions = []
+                if !options.includeHidden { opts.insert(.skipsHiddenFiles) }
+                guard let kids = try? FileManager.default.contentsOfDirectory(
+                    at: next, includingPropertiesForKeys: nil, options: opts) else { continue }
+                stack.append(contentsOf: kids)
+            } else {
+                bytes = Self.saturatingAdd(bytes, Int64(st.st_size))
+                files += 1
+            }
+        }
+        if truncated {
+            skipped.append("\(url.lastPathComponent): bundle measurement stopped early — size is a lower bound")
+        }
+        return (bytes, files)
+    }
+
+    /// Overflow-safe addition. Sparse files and hostile/broken metadata can
+    /// report sizes near `Int64.max`; a plain `+=` over a large tree traps
+    /// and terminates the app.
+    @inline(__always)
+    static func saturatingAdd(_ a: Int64, _ b: Int64) -> Int64 {
+        let (sum, overflow) = a.addingReportingOverflow(b)
+        guard overflow else { return sum }
+        return b > 0 ? Int64.max : Int64.min
     }
 
     private func fileMeta(path: String) -> (logical: Int64, physical: Int64, mtime: Date) {

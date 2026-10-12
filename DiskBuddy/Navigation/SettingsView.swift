@@ -15,6 +15,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gear") }
             ScanningSettingsTab()
                 .tabItem { Label("Scanning", systemImage: "magnifyingglass") }
+            MenuBarSettingsTab()
+                .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
@@ -176,8 +178,7 @@ private struct ScanningSettingsTab: View {
                 }
             }
             Section("Snapshots") {
-                Toggle("Auto-save snapshot after each scan", isOn: .constant(true))
-                    .disabled(true)
+                Toggle("Auto-save snapshot after each scan", isOn: saved(\.autoSaveSnapshots))
                 Stepper("Retain: \(state.snapshotRetention) snapshots", value: saved(\.snapshotRetention), in: 1...100)
                 Text("Storage: \(state.snapshots.count) snapshots (~/Library/Application Support/DiskBuddy/snapshots/)")
                     .font(.caption)

@@ -1,4 +1,5 @@
 import SwiftUI
+import WidgetKit
 
 @main
 struct DiskDoomApp: App {
@@ -22,10 +23,14 @@ struct DiskDoomApp: App {
     @StateObject private var topology = DiskTopologyService()
     @StateObject private var coordinator = LaunchCoordinator()
     @StateObject private var overlays = OverlayStack()
+    @StateObject private var inventory = AppInventoryService()
+    @StateObject private var menuBarMonitor = MenuBarMonitor()
+    @StateObject private var devWorkspaceScanner = DeveloperWorkspaceScanner()
+    @AppStorage("menuBarEnabled") private var menuBarEnabled = true
     @State private var showSplash = true
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             ZStack {
                 ContentView()
                     .environmentObject(state)
@@ -50,6 +55,9 @@ struct DiskDoomApp: App {
                 .environmentObject(topology)
                 .environmentObject(coordinator)
                 .environmentObject(overlays)
+                .environmentObject(inventory)
+                .environmentObject(menuBarMonitor)
+                .environmentObject(devWorkspaceScanner)
                     .task {
                         // Window is already visible here — jobs hydrate progressively.
                         LaunchJobs.registerAll(
@@ -58,8 +66,69 @@ struct DiskDoomApp: App {
                             forecast: forecastEngine, lifecycle: lifecycleEngine,
                             devcaches: devCacheEngine, budgets: budgetEngine,
                             compression: compressionEngine, privacy: privacyEngine,
-                            topology: topology)
+                            topology: topology, inventory: inventory,
+                            devWorkspace: devWorkspaceScanner)
                         await coordinator.runAll()
+                    }
+                    .task {
+                        // Menu bar monitor: live free space + threshold alerts.
+                        menuBarMonitor.startMonitoring(notifications: state.notifications)
+                        // Weekly digest: keep the schedule in sync with the setting.
+                        // NOTE: must be the shared instance — constructing a
+                        // throwaway NotificationService re-points (and then
+                        // drops) the UNUserNotificationCenter delegate.
+                        if UserDefaults.standard.object(forKey: "weeklyDigestEnabled") as? Bool == true {
+                            NotificationService.shared.scheduleWeeklyDigest()
+                        }
+                    }
+                    .onReceive(state.$scanRoot) { root in
+                        // Scan finished (or cached scan restored) → refresh
+                        // menu bar space hogs + score badges, and record a
+                        // usage snapshot (with category breakdown) for the
+                        // forecast history.
+                        guard root != nil else { return }
+                        menuBarMonitor.updateFromScan(
+                            records: state.records,
+                            apps: inventory.apps,
+                            litterScore: litterEngine.entries.isEmpty ? nil : litterEngine.averageScore,
+                            healthGrade: healthEngine.score?.grade)
+                        // Forecast: category breakdown from the fresh records.
+                        var breakdown: [String: Int64] = [:]
+                        for record in state.records where !record.isDirectory {
+                            breakdown[record.category.rawValue, default: 0] += record.bytes
+                        }
+                        if let v = try? URL(fileURLWithPath: "/").resourceValues(
+                            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
+                           let total = v.volumeTotalCapacity {
+                            let free = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
+                            let capacity = Int64(total)
+                            forecastEngine.recordSnapshot(
+                                totalCapacity: capacity, usedSize: capacity - free, freeSize: free,
+                                categoryBreakdown: breakdown, source: .scan)
+                            Task { await forecastEngine.compute() }
+                        }
+                        // Desktop widget: refresh the shared snapshot.
+                        WidgetDataBridge.write(
+                            healthGrade: healthEngine.score?.grade,
+                            lastScanDate: state.lastScanDate,
+                            daysUntilFull: forecastEngine.forecast?.daysUntilFull,
+                            topHogs: menuBarMonitor.topSpaceHogs.map { ($0.name, $0.size) })
+                        WidgetCenter.shared.reloadAllTimelines()
+                    }
+                    .onReceive(state.dupFinder.$sets) { sets in
+                        // Duplicate results landed → publish the index the
+                        // Quick Look extension reads (path → copy count).
+                        WidgetDataBridge.writeDuplicateIndex(sets: sets)
+                    }
+                    .onReceive(inventory.$apps) { apps in
+                        // Inventory finished (also runs at launch) → refresh
+                        // app space hogs even before any scan.
+                        guard !apps.isEmpty else { return }
+                        menuBarMonitor.updateFromScan(
+                            records: state.records,
+                            apps: apps,
+                            litterScore: litterEngine.entries.isEmpty ? nil : litterEngine.averageScore,
+                            healthGrade: healthEngine.score?.grade)
                     }
                 if showSplash {
                     SplashScreen { showSplash = false }
@@ -161,7 +230,61 @@ struct DiskDoomApp: App {
         .defaultSize(width: 360, height: 520)
 
         Settings {
+            // NOTE: the Settings scene does NOT inherit the WindowGroup
+            // environment, so every object SettingsView needs must be
+            // injected here explicitly. Missing these crashed the app on ⌘,.
             SettingsView()
+                .environmentObject(state)
+                .environmentObject(state.permissions)
+                .environmentObject(state.license)
+                .environmentObject(menuBarMonitor)
         }
+
+        // ── Feature 6: Menu Bar Widget (always-visible free space) ──
+        MenuBarExtra(isInserted: $menuBarEnabled) {
+            MenuBarExtraPanel()
+                .environmentObject(menuBarMonitor)
+                .environmentObject(state)
+                .environmentObject(forecastEngine)
+                .environmentObject(inventory)
+                .environmentObject(litterEngine)
+                .environmentObject(healthEngine)
+        } label: {
+            MenuBarLabel(monitor: menuBarMonitor)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+/// The always-visible menu bar item: icon + compact free-space text,
+/// colored by current disk state.
+private struct MenuBarLabel: View {
+    @ObservedObject var monitor: MenuBarMonitor
+    @AppStorage("menuBarStyle") private var style = "iconAndText"
+
+    var body: some View {
+        switch style {
+        case "textOnly":
+            text
+        case "compact":
+            text
+                .foregroundStyle(.secondary)
+        case "iconAndText":
+            HStack(spacing: 3) {
+                Image(systemName: monitor.spaceState.icon)
+                    .foregroundStyle(monitor.spaceState.color)
+                    .font(.system(size: 11))
+                text
+            }
+        default: // iconOnly
+            Image(systemName: monitor.spaceState.icon)
+                .foregroundStyle(monitor.spaceState.color)
+                .font(.system(size: 13))
+        }
+    }
+
+    private var text: some View {
+        Text(monitor.menuBarTitle)
+            .font(.system(size: 12, weight: .medium, design: .monospaced))
     }
 }

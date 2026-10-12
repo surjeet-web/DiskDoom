@@ -15,6 +15,12 @@ struct FlameView: View {
         return result
     }
 
+    /// Largest size among the rows the table actually lists. Normalizing bars
+    /// against the whole disk instead makes every bar sub-pixel on real data.
+    private var maxVisibleBytes: Int64 {
+        max(layers.flatMap { $0 }.filter { $0.id != root.id }.map(\.sizeBytes).max() ?? 0, 1)
+    }
+
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
             if focus != nil {
@@ -56,7 +62,7 @@ struct FlameView: View {
                             Spacer()
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(node.category.color.opacity(0.7))
-                                .frame(width: 120 * CGFloat(node.sizeBytes) / CGFloat(max(root.sizeBytes, 1)), height: 10, alignment: .leading)
+                                .frame(width: 120 * CGFloat(node.sizeBytes) / CGFloat(maxVisibleBytes), height: 10, alignment: .leading)
                             Text(node.sizeString)
                                 .font(.callout.monospacedDigit())
                                 .frame(width: 80, alignment: .trailing)
@@ -70,8 +76,12 @@ struct FlameView: View {
                             Button("Focus (drill into)") {
                                 if !node.children.isEmpty { focus = node }
                             }
-                            Button("Stage for Cleanup") {
-                                state.stage(source: "Flame", path: node.path, bytes: node.sizeBytes)
+                            if node.isActionable {
+                                Button("Stage for Cleanup") {
+                                    state.stage(source: "Flame", path: node.path, bytes: node.sizeBytes)
+                                }
+                            } else {
+                                Text("Aggregated items — not a real folder").font(.caption)
                             }
                         }
                     }

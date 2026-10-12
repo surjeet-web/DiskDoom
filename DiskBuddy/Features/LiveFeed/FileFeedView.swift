@@ -5,6 +5,12 @@ import SwiftUI
 struct FileFeedView: View {
     @EnvironmentObject var monitor: FileFeedMonitor
 
+    private var watchedList: String {
+        monitor.watchPaths
+            .map { ($0 as NSString).lastPathComponent }
+            .joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -12,14 +18,18 @@ struct FileFeedView: View {
                     Text("Live File Activity").font(.title2.weight(.semibold))
                     HStack(spacing: DesignTokens.Space.s) {
                         Circle()
-                            .fill(monitor.isMonitoring ? .green : .gray)
+                            .fill(monitor.isMonitoring ? Color.green : Color.gray)
                             .frame(width: 8, height: 8)
-                        Text(monitor.isMonitoring ? "Monitoring" : "Paused")
+                        Text(monitor.isMonitoring ? "Monitoring \(monitor.watchPaths.count) folders" : "Paused")
                         Text("· \(monitor.eventsPerMinute) events/min")
                             .monospacedDigit()
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    Text("Watching: \(watchedList)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
                 Spacer()
                 Button(monitor.isMonitoring ? "Pause" : "Start") {
@@ -63,6 +73,9 @@ struct FileFeedView: View {
                 }
                 .listStyle(.inset)
             }
+        }
+        .onAppear {
+            if !monitor.isMonitoring { monitor.start() } // live the moment you open the tab
         }
         .onDisappear { monitor.stop() }
     }

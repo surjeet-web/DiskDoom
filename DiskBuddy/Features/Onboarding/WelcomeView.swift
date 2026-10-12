@@ -9,7 +9,7 @@ struct WelcomeView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
             WizardHeader(step: 1, totalSteps: 3, onBack: nil) {
-                state.limitedMode = true
+                state.refreshLimitedMode()
                 state.finishOnboarding()
             }
             Spacer()

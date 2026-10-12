@@ -4,7 +4,6 @@ import SwiftUI
 
 struct PhotoLibraryView: View {
     @EnvironmentObject var analyzer: PhotoLibraryAnalyzer
-    @EnvironmentObject var state: AppState
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,19 +65,20 @@ struct PhotoLibraryView: View {
                             }
                             VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
                                 Text("Reclaimable").font(.headline)
-                                HStack {
-                                    Image(systemName: "doc.on.doc.fill").foregroundStyle(.orange)
-                                    Text("\(stats.duplicateSets) duplicate sets · \(ByteFormatting.format(stats.duplicateWasteBytes)) waste")
-                                        .font(.callout)
-                                    Spacer()
-                                    Button("Stage Duplicates") {
-                                        state.stage(source: "Photos", path: "Photo duplicates (\(stats.duplicateSets) sets)", bytes: stats.duplicateWasteBytes)
-                                        state.showCleanup = true
+                                if stats.duplicateSets > 0 {
+                                    HStack {
+                                        Image(systemName: "doc.on.doc.fill").foregroundStyle(.orange)
+                                        Text("\(stats.duplicateSets) duplicate sets · \(ByteFormatting.format(stats.duplicateWasteBytes)) waste")
+                                            .font(.callout)
                                     }
-                                    .buttonStyle(.bordered).controlSize(.small)
+                                    .padding(DesignTokens.Space.s)
+                                    .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
+                                } else {
+                                    Text("Duplicate detection inside the Photos library isn't available — DiskBuddy won't guess. Use the Duplicates tab for byte-identical files found by scanning, or manage duplicates in the Photos app.")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: 520, alignment: .leading)
                                 }
-                                .padding(DesignTokens.Space.s)
-                                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
                                 Text("Recently Deleted can only be emptied inside the Photos app — DiskDoom never deletes it silently.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }

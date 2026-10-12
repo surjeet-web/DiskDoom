@@ -24,7 +24,14 @@ struct ExtCloudView: View {
             .sorted { $0.bytes > $1.bytes }
     }
 
-    private var maxBytes: Int64 { groups.first?.bytes ?? 1 }
+    // NaN guard: a scan can index many zero-byte files, making `first?.bytes` 0
+    // (not nil), so `sqrt(0/0)` flows into `.font(size:)` and SwiftUI traps with
+    // "Invalid frame dimension (NaN)". Clamp the divisor and the derived scale.
+    private var maxBytes: Int64 { max(groups.first?.bytes ?? 0, 1) }
+
+    /// Chips rendered per pass; the rest are dropped, so say so out loud rather
+    /// than silently truncating a real scan's kind list.
+    private let kindsLimit = 60
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
@@ -41,8 +48,10 @@ struct ExtCloudView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 12)], spacing: 12) {
-                        ForEach(groups.prefix(60)) { group in
-                            let scale = sqrt(CGFloat(group.bytes) / CGFloat(maxBytes))
+                        ForEach(groups.prefix(kindsLimit)) { group in
+                            // NaN guard: clamp into 0...1 so rounding in the byte totals
+                            // can never produce a negative or NaN font size.
+                            let scale = min(1, max(0, sqrt(CGFloat(group.bytes) / CGFloat(maxBytes))))
                             Button {
                                 selectedExt = selectedExt == group.ext ? nil : group.ext
                             } label: {
@@ -68,6 +77,11 @@ struct ExtCloudView: View {
                     }
                     .padding(.vertical, DesignTokens.Space.s)
                 }
+                Text(groups.count > kindsLimit
+                     ? "Top \(kindsLimit) of \(groups.count) kinds by size · \(groups.prefix(kindsLimit).reduce(Int64(0)) { $0 + $1.bytes }.fileSizeString) shown"
+                     : "\(groups.count) kinds")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if let ext = selectedExt {
                     Divider()
                     List(topFiles(ext: ext).prefix(30), id: \.path) { file in

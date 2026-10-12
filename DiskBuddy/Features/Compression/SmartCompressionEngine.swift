@@ -29,8 +29,10 @@ final class SmartCompressionEngine: ObservableObject, @unchecked Sendable {
 
     var totalSaving: Int64 { files.reduce(0) { $0 + $1.estimatedSaving } }
 
-    /// Mock candidate list (production: derived from real scan + stat blocks).
-    func analyze() {
+    /// Real candidate list from the scan index: large, uncompressed, old
+    /// files in user-writable locations. System/app bundles are excluded —
+    /// compressing them is not safe.
+    func analyze(records: [ScannedRecord]) {
         workTask?.cancel()
         workTask = Task { [weak self] in
             guard let self else { return }
@@ -38,7 +40,10 @@ final class SmartCompressionEngine: ObservableObject, @unchecked Sendable {
                 self.isAnalyzing = true
                 self.lastError = nil
             }
-            let found = Self.mockCandidates()
+            let minBytes: Int64 = 100_000_000
+            let found = await Task.detached {
+                Self.realCandidates(records: records, minBytes: minBytes)
+            }.value
             guard !Task.isCancelled else {
                 await MainActor.run { self.isAnalyzing = false }
                 return
@@ -50,28 +55,91 @@ final class SmartCompressionEngine: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private static func mockCandidates() -> [CompressibleFile] {
-        let mock: [(String, Int64, Double, Int?)] = [
-            ("~/Library/Caches/com.adobe.CC/huge-render-cache.bin", 8_200_000_000, 0.30, 120),
-            ("~/Library/Application Support/Spotify/PersistentCache", 3_400_000_000, 0.45, 60),
-            ("~/Documents/archives/old-project-logs.tar", 1_800_000_000, 0.25, 400),
-            ("~/Library/Logs/DiagnosticReports/old-crashes.log", 900_000_000, 0.25, 200),
-            ("~/Movies/unused-screen-recordings.mov", 2_400_000_000, 0.98, 90),
-        ]
-        return mock.compactMap { (path, logical, ratio, days) -> CompressibleFile? in
-            if Self.isAlreadyCompressedFormat(path: path) { return nil }
-            let saving = logical - Int64(Double(logical) * ratio)
+    private static func realCandidates(records: [ScannedRecord], minBytes: Int64) -> [CompressibleFile] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return records.compactMap { record -> CompressibleFile? in
+            guard !record.isDirectory,
+                  record.bytes >= minBytes,
+                  record.path.hasPrefix(home),
+                  isDocumentLike(path: record.path),
+                  !isAlreadyCompressedFormat(path: record.path)
+            else { return nil }
+            let ratio = estimatedRatio(path: record.path)
+            let saving = record.bytes - Int64(Double(record.bytes) * ratio)
             guard saving > 1_024 else { return nil }
+            let ageDays = max(0, Int(Date().timeIntervalSince(record.modified) / 86_400))
             return CompressibleFile(
-                path: path, name: (path as NSString).lastPathComponent,
-                logicalBytes: logical, physicalBytes: logical,
-                daysSinceAccess: days, estimatedSaving: saving)
+                path: record.path,
+                name: (record.path as NSString).lastPathComponent,
+                logicalBytes: record.bytes,
+                // physicalBytes mirrors the logical size: the scanner does not
+                // track a distinct on-disk size for files, so this must not be
+                // presented as one.
+                physicalBytes: record.bytes,
+                daysSinceAccess: ageDays,
+                estimatedSaving: saving)
         }
+    }
+
+    /// Allow-list of genuinely compressible document types.
+    ///
+    /// The old predicate accepted *any* file >= 100 MB under `$HOME`, which
+    /// swept in `~/Library/Mail`, `~/Library/Mobile Documents`,
+    /// `~/Library/CloudStorage`, `.ssh`, VM images and Time Machine staging —
+    /// and "Compress All" then rewrote all of them. Rewriting anything under
+    /// `~/Library` is out of scope for a space tool.
+    private static func isDocumentLike(path: String) -> Bool {
+        if path.hasPrefix("/Library") || path.hasPrefix("/System") || path.hasPrefix("/private/var/db") {
+            return false
+        }
+        let libraryPrefix = FileManager.default.homeDirectoryForCurrentUser.path + "/Library"
+        if path.hasPrefix(libraryPrefix) { return false }
+        // Never touch code, binaries, or developer artifacts.
+        if path.contains("/.git/") || path.contains("/node_modules/")
+            || path.hasSuffix(".git") || path.contains("/.ssh/") { return false }
+        let ext = (path as NSString).pathExtension.lowercased()
+        return documentExtensions.contains(ext)
+    }
+
+    private static let documentExtensions: Set<String> = [
+        "txt", "md", "rtf", "doc", "docx", "odt", "pdf", "pages", "numbers", "key",
+        "csv", "tsv", "json", "xml", "yaml", "yml", "html", "htm", "log",
+        "png", "jpg", "jpeg", "gif", "tiff", "tif", "bmp", "heic", "psd", "ai",
+        "mp3", "wav", "aiff", "m4a", "mp4", "mov", "avi", "mkv",
+        "zip", "tar", "gz", "bz2", "7z", "dmg", "pkg",
+        "epub", "mobi", "ppt", "pptx", "keynote", "icns",
+    ]
+
+    /// Whether the volume containing `path` supports transparent file compression.
+    ///
+    /// `ditto --hfsCompression` is an **HFS+** feature. APFS (the default on
+    /// every Mac shipped since ~2017) has no transparent compression, so on
+    /// APFS "Compress All" rewrote every candidate file — copy to
+    /// `path + ".tmp"` then `replaceItemAt` — for **zero** space saved, and
+    /// *decompressed* files that were already compressed, temporarily
+    /// doubling them on disk. On a nearly-full volume that risks ENOSPC
+    /// mid-copy for no benefit.
+    ///
+    /// `MNT_COMPRESS` in `statfs.f_flags` is set only on compression-capable
+    /// volumes. If we cannot determine it, we refuse rather than silently
+    /// rewriting the user's files.
+    static func volumeSupportsCompression(at path: String) -> Bool {
+        var fs = statfs()
+        let target = (path as NSString).expandingTildeInPath
+        guard statfs(target, &fs) == 0 else { return false }
+        // MNT_COMPRESS == 0x00000004
+        return (fs.f_flags & UInt32(0x4)) != 0
     }
 
     /// Compress one file atomically: ditto to temp, then replaceItemAt.
     /// Static + detached-safe: Sendable in (path), throws out.
     static func compressFile(at path: String) throws {
+        guard volumeSupportsCompression(at: path) else {
+            throw NSError(
+                domain: "SmartCompression", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "This volume doesn't support transparent compression (APFS has no such feature). Refusing to rewrite the file for no space saving."])
+        }
         let tmpURL = URL(fileURLWithPath: path + ".diskbuddy-tmp")
         defer { try? FileManager.default.removeItem(at: tmpURL) }
         let process = Process()
@@ -79,6 +147,8 @@ final class SmartCompressionEngine: ObservableObject, @unchecked Sendable {
         process.arguments = ["--hfsCompression", path, tmpURL.path]
         process.standardError = FileHandle.nullDevice
         try process.run()
+        // Drain stderr before waiting (64 KB pipe deadlock), and don't let a
+        // hung ditto block forever on a 40 GB file.
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw NSError(domain: "SmartCompression", code: Int(process.terminationStatus),
@@ -89,6 +159,13 @@ final class SmartCompressionEngine: ObservableObject, @unchecked Sendable {
     }
 
     func compressAll() {
+        compress(files: files)
+    }
+
+    /// Compress an explicit list. Callers must pass only what the user
+    /// selected — there is no longer an implicit "everything".
+    func compress(files list: [CompressibleFile]) {
+        guard !list.isEmpty else { return }
         workTask?.cancel()
         workTask = Task { [weak self] in
             guard let self else { return }
@@ -97,7 +174,6 @@ final class SmartCompressionEngine: ObservableObject, @unchecked Sendable {
                 self.progress = 0
                 self.lastError = nil
             }
-            let list = files
             var done = 0
             for file in list {
                 if Task.isCancelled { break }

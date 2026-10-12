@@ -5,6 +5,8 @@ import SwiftUI
 struct DiskHealthView: View {
     @EnvironmentObject var engine: DiskHealthEngine
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var inventory: AppInventoryService
+    @EnvironmentObject var lifecycle: AppLifecycleEngine
 
     var body: some View {
         ScrollView {
@@ -32,11 +34,17 @@ struct DiskHealthView: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
+                    .accessibleChart(summary: "Disk health grade \(score.grade), score \(score.overall) out of 100. Junk \(score.junkPercent) percent, stale \(score.stalePercent) percent, cache bloat \(score.cacheBloatScore) out of 100. \(score.recommendation)")
                     VStack(spacing: DesignTokens.Space.m) {
                         HealthComponentRow(label: "Junk Files", badPercent: score.junkPercent, icon: "trash")
                         HealthComponentRow(label: "Stale Files", badPercent: score.stalePercent, icon: "clock.badge.exclamationmark")
                         HealthComponentRow(label: "Cache Bloat", badPercent: score.cacheBloatScore, icon: "archivebox")
-                        HealthComponentRow(label: "Unused Apps", badPercent: score.unusedAppRatio, icon: "app.badge.checkmark")
+                        HealthComponentRow(
+                            label: lifecycle.trackedDaysSinceLaunch.isEmpty
+                                ? "Unused Apps (not tracked yet)"
+                                : "Unused Apps",
+                            badPercent: score.unusedAppRatio,
+                            icon: "app.badge.checkmark")
                     }
                     Divider()
                     VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
@@ -45,17 +53,12 @@ struct DiskHealthView: View {
                             HStack(spacing: DesignTokens.Space.m) {
                                 VStack(alignment: .leading) {
                                     Text(item.action).font(.callout)
-                                    Text("Could free \(ByteFormatting.format(item.potentialSaving))")
-                                        .font(.caption.monospacedDigit())
-                                        .foregroundStyle(.green)
                                 }
                                 Spacer()
-                                Button("Stage") {
-                                    state.stage(source: "Health", path: item.action, bytes: item.potentialSaving)
-                                    state.showCleanup = true
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                                Text("~ free up to \(ByteFormatting.format(item.potentialSaving))")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.green)
+                                    .frame(width: 150, alignment: .trailing)
                             }
                             .padding(DesignTokens.Space.s)
                             .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
@@ -64,16 +67,30 @@ struct DiskHealthView: View {
                 }
                 .padding()
             } else {
-                VStack {
+                VStack(spacing: DesignTokens.Space.m) {
                     Spacer()
-                    Text("Complete a scan to see your disk health score")
+                    Image(systemName: state.scanRoot == nil ? "magnifyingglass" : "hourglass")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.tertiary)
+                    Text(state.scanRoot == nil
+                         ? "Scan to see your disk health score"
+                         : "Not enough data yet")
+                        .font(.title3.weight(.semibold))
+                    Text(state.scanRoot == nil
+                         ? "The grade is computed from your scan results. Nothing is measured until you scan."
+                         : "A health grade needs at least \(DiskHealthEngine.minimumRecordsForScore.formatted()) indexed files — this scan indexed \(state.records.count.formatted()).")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 380)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear { if engine.score == nil { engine.compute() } }
+        .task(id: [state.records.count, inventory.apps.count, lifecycle.trackedDaysSinceLaunch.count]) {
+            engine.compute(records: state.records, apps: inventory.apps, unusedBundleIDs: Set(lifecycle.trackedDaysSinceLaunch.filter { $0.value > 90 }.keys))
+        }
     }
 
     private func healthColor(_ score: Int) -> Color {
@@ -121,7 +138,9 @@ private struct HealthComponentRow: View {
 
 #Preview {
     DiskHealthView()
-        .environmentObject({ let e = DiskHealthEngine(); e.compute(); return e }())
+        .environmentObject({ let e = DiskHealthEngine(); e.compute(records: [], apps: []); return e }())
         .environmentObject(AppState())
+        .environmentObject(AppInventoryService())
+        .environmentObject(AppLifecycleEngine())
         .frame(width: 700, height: 600)
 }
