@@ -60,12 +60,7 @@ final class DiskBuddyUITests: XCTestCase {
 
         XCTAssertEqual(app.state, .runningForeground,
                        "App crashed after ⌘, — the Settings scene is missing environment objects")
-
-        if appeared {
-            // Close it again so the next test starts clean.
-            app.typeKey(w: .command)
-            _ = window.waitForExistence(timeout: 5)
-        }
+        XCTAssertTrue(appeared, "Settings scene did not present after ⌘,")
     }
 
     @MainActor
