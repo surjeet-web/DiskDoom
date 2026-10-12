@@ -10,4 +10,10 @@ INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.utilities
 INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO
 INFOPLIST_KEY_NSSupportsAutomaticTermination = NO
 INFOPLIST_KEY_NSSupportsSuddenTermination = NO
-INFOPLIST_FILE = DiskBuddy/SupportFiles/Info.plist
+
+// NOTE: INFOPLIST_FILE deliberately lives in the app target's build settings,
+// not here. This xcconfig is attached at the *project* level, so anything in
+// it is inherited by every target — and INFOPLIST_FILE here caused the UI
+// test runner app to be built with the main app's Info.plist (wrong
+// CFBundleIdentifier), which made DiskBuddyUITests fail to dlopen with
+// "different Team IDs". Only the app needs a custom Info.plist.

@@ -11,4 +11,5 @@ INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO
 INFOPLIST_KEY_NSSupportsAutomaticTermination = NO
 INFOPLIST_KEY_NSSupportsSuddenTermination = NO
 INFOPLIST_KEY_NSHumanReadableCopyright = Copyright 2026 DiskDoom. All rights reserved.
-INFOPLIST_FILE = DiskBuddy/SupportFiles/Info.plist
+
+// INFOPLIST_FILE is set on the app target only — see Debug.xcconfig.
