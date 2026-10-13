@@ -24,6 +24,9 @@ enum DesignTokens {
         static let base: Double = 0.22
         static let slow: Double = 0.3
         static let reveal: Double = 0.5
+
+        static let navigation = Animation.spring(response: 0.32, dampingFraction: 0.88)
+        static let entrance = Animation.easeOut(duration: 0.4)
     }
 
     enum Layout {

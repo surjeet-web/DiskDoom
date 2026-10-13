@@ -39,33 +39,48 @@ struct MenuBarExtraPanel: View {
                 .padding(.vertical, DesignTokens.Space.s)
         }
         .frame(width: 320)
+        .onAppear {
+            monitor.pollDiskSpace()
+            monitor.refreshQuickFolderStats(force: false)
+        }
     }
 
     // MARK: - Space gauge
 
-    private var spaceGauge: some View {
-        HStack(spacing: DesignTokens.Space.m) {
+    @ViewBuilder
+    private var capacityRing: some View {
+        if let capacity = monitor.currentCapacity.availableValue {
             ZStack {
+                Circle().stroke(Color.secondary.opacity(0.12), lineWidth: 8)
                 Circle()
-                    .stroke(Color.secondary.opacity(0.12), lineWidth: 8)
-                    .frame(width: 56, height: 56)
-                Circle()
-                    .trim(from: 0, to: min(max(CGFloat(monitor.usedPercent) / 100, 0), 1))
+                    .trim(from: 0, to: capacity.usedPercent / 100)
                     .stroke(monitor.spaceState.color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .frame(width: 56, height: 56)
-                Text("\(Int(monitor.freePercent))%")
+                Text("\(Int(100 - capacity.usedPercent))%")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundStyle(monitor.spaceState.color)
             }
-            .accessibleProgress(
-                value: monitor.usedPercent / 100,
-                label: "Disk usage: \(ByteFormatting.format(monitor.usedSpace)) used of \(ByteFormatting.format(monitor.totalCapacity)), \(ByteFormatting.format(monitor.freeSpace)) free")
+            .frame(width: 56, height: 56)
+            .accessibleProgress(value: capacity.usedPercent / 100,
+                label: "Disk usage: \(ByteFormatting.format(capacity.usedBytes)) used of \(ByteFormatting.format(capacity.totalBytes)), \(ByteFormatting.format(capacity.freeBytes)) free")
+        } else {
+            ZStack {
+                Circle().stroke(Color.secondary.opacity(0.12), lineWidth: 8)
+                Text("—").font(.caption)
+            }
+            .frame(width: 56, height: 56)
+            .accessibilityLabel("Disk capacity: \(monitor.currentCapacity.statusLabel)")
+        }
+    }
+
+    private var spaceGauge: some View {
+        HStack(spacing: DesignTokens.Space.m) {
+            capacityRing
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(ByteFormatting.format(monitor.freeSpace))
+                Text(monitor.currentCapacity.availableValue.map { ByteFormatting.format($0.freeBytes) } ?? monitor.currentCapacity.statusLabel)
                     .font(.system(size: 18, weight: .bold, design: .monospaced))
-                Text("free of \(ByteFormatting.format(monitor.totalCapacity))")
+                Text(monitor.currentCapacity.availableValue.map { "free of \(ByteFormatting.format($0.totalBytes))" } ?? "Disk capacity unavailable")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(monitor.statusText)
@@ -98,12 +113,12 @@ struct MenuBarExtraPanel: View {
             StatPill(
                 icon: "arrow.down.circle.fill",
                 label: "Downloads",
-                value: folderStat(monitor.downloadsBytes),
+                value: folderStat(monitor.downloadsBytes, partial: monitor.downloadsPartial),
                 color: .purple)
             StatPill(
                 icon: "trash.fill",
                 label: "Trash",
-                value: folderStat(monitor.trashBytes),
+                value: folderStat(monitor.trashBytes, partial: monitor.trashPartial),
                 color: .gray)
             if let score = monitor.litterScore {
                 StatPill(
@@ -121,8 +136,9 @@ struct MenuBarExtraPanel: View {
         }
     }
 
-    private func folderStat(_ bytes: Int64) -> String {
+    private func folderStat(_ bytes: Int64, partial: Bool) -> String {
         if bytes < 0 { return "…" }
+        if partial { return bytes == 0 ? "Not measured" : "≥ " + ByteFormatting.format(bytes) }
         return bytes == 0 ? "Empty" : ByteFormatting.format(bytes)
     }
 
@@ -207,7 +223,7 @@ struct MenuBarExtraPanel: View {
                 .foregroundStyle(days <= 7 ? .red : .orange)
                 .font(.caption)
             if days <= 7 {
-                Text("Disk full in \(days) days!")
+                Text("Estimated full in ~\(days) days")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
             } else {

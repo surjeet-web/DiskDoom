@@ -3,8 +3,10 @@ import Quartz
 import SwiftUI
 import PDFKit
 import AVKit
+@preconcurrency import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
+import Darwin
 
 // MARK: - Feature 10: Quick Look preview extension with DiskDoom metadata
 //
@@ -31,6 +33,37 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
 
 // MARK: - Metadata model
 
+// MARK: - Pure Quick Look measurement policy
+enum QLMeasurementPolicy {
+    struct DuplicateSnapshot: Codable {
+        let schemaVersion: Int
+        let scannedAt: Date
+        let source: String
+        let counts: [String: Int]
+    }
+
+    static func size(_ bytes: Int64?, measuredAt: Date, source: String, failure: String? = nil) -> Measurement<Int64> {
+        if let failure { return .error(reason: failure) }
+        guard let bytes, bytes >= 0 else { return .unavailable(reason: "Size metadata missing or invalid") }
+        return .available(value: bytes, measuredAt: measuredAt, source: source)
+    }
+
+    static func duplicate(data: Data?, path: String, now: Date) -> Measurement<Int> {
+        guard let data else { return .unavailable(reason: "No duplicate scan available") }
+        guard let snapshot = try? JSONDecoder().decode(DuplicateSnapshot.self, from: data),
+              snapshot.schemaVersion == 2, !snapshot.source.isEmpty,
+              snapshot.scannedAt <= now else {
+            return .unavailable(reason: "Duplicate cache is invalid or has no dated provenance")
+        }
+        guard let count = snapshot.counts[path], count > 0 else {
+            return .unavailable(reason: "Not present in the last duplicate scan")
+        }
+        // A pathname does not establish identity, existence or contents now.
+        return .stale(value: count, measuredAt: snapshot.scannedAt, source: snapshot.source)
+    }
+}
+// MARK: - End pure Quick Look measurement policy
+
 struct QLPreviewContent {
     let url: URL
     let metadata: QLMetadata
@@ -47,17 +80,16 @@ struct QLMetadata {
     let name: String
     let path: String
     let kind: String          // UTType description
-    let logicalBytes: Int64   // file size
-    let onDiskBytes: Int64    // allocated (post APFS compression)
-    let isCompressed: Bool    // allocated < logical
+    let logicalBytes: Measurement<Int64>   // file size
+    let onDiskBytes: Measurement<Int64>    // allocated (zero is valid for sparse files)
+    let isCompressed: Bool    // measured UF_COMPRESSED filesystem flag
     let created: Date?
     let modified: Date?
     let whereFrom: String?    // com.apple.metadata:kMDItemWhereFroms
     let quarantined: Bool     // com.apple.quarantine
     let quarantineAgent: String?
-    let duplicateCopies: Int? // shared index; nil = not scanned
+    let duplicateCopies: Measurement<Int> // last-scan evidence, never current verification
     let imageInfo: ImageInfo?
-    let avInfo: AVInfo?
     let pdfPages: Int?
     let textPreview: String?
 
@@ -101,22 +133,25 @@ struct QLMetadata {
     static let maxVideoMetadataBytes = 512_000_000
 
     static func collect(url: URL) -> QLMetadata {
-        let fm = FileManager.default
         let path = url.path
-        var logical: Int64 = 0
-        var allocated: Int64 = 0
-        if let values = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey, .isRegularFileKey]) {
-            logical = Int64(values.fileSize ?? 0)
-            allocated = Int64(values.totalFileAllocatedSize ?? 0)
-            if allocated == 0 { allocated = logical }
-        }
-        if logical == 0, let attrs = try? fm.attributesOfItem(atPath: path) {
-            logical = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        let now = Date()
+        let logical: Measurement<Int64>
+        let allocated: Measurement<Int64>
+        do {
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey, .isRegularFileKey])
+            logical = QLMeasurementPolicy.size(values.fileSize.map(Int64.init), measuredAt: now, source: "URL fileSize metadata")
+            allocated = QLMeasurementPolicy.size(values.totalFileAllocatedSize.map(Int64.init), measuredAt: now, source: "URL allocated-size metadata")
+        } catch {
+            logical = QLMeasurementPolicy.size(nil, measuredAt: now, source: "URL fileSize metadata", failure: error.localizedDescription)
+            allocated = QLMeasurementPolicy.size(nil, measuredAt: now, source: "URL allocated-size metadata", failure: error.localizedDescription)
         }
 
-        let attrs = try? fm.attributesOfItem(atPath: path)
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let created = attrs?[.creationDate] as? Date
         let modified = attrs?[.modificationDate] as? Date
+        var fileStat = stat()
+        let isCompressed = lstat(path, &fileStat) == 0
+            && (fileStat.st_flags & UInt32(UF_COMPRESSED)) != 0
 
         let type = UTType(filenameExtension: url.pathExtension)
             ?? (try? url.resourceValues(forKeys: [.typeIdentifierKey]))?.typeIdentifier
@@ -128,7 +163,7 @@ struct QLMetadata {
         let (whereFrom, quarantined, agent) = provenance(path: path)
 
         // Duplicate status from the shared scan index.
-        let duplicateCopies = DuplicateIndex.lookup(path: path)
+        let duplicateCopies = DuplicateIndex.lookup(path: path, now: now)
 
         // Media metadata.
         // Byte-budget every read. `String(contentsOf:)` materialises the
@@ -139,11 +174,14 @@ struct QLMetadata {
         // preview: once in collect, once in PreviewPayload.build.)
         let physical = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         let smallEnoughToRead = physical > 0 && physical < Self.maxInlineTextBytes
-        let imageInfo = physical < Self.maxImageMetadataBytes ? imageMetadata(url: url) : nil
-        let avInfo = physical < Self.maxVideoMetadataBytes ? avMetadata(url: url) : nil
+        let imageInfo = physical > 0 && physical < Self.maxImageMetadataBytes ? imageMetadata(url: url) : nil
+        // A/V metadata is NOT gathered here. Since macOS 13, AVFoundation
+        // requires the async loading APIs (load(.duration)/load(.tracks));
+        // QLPreviewRootView loads it from its .task once the synchronous UI is
+        // on screen, so the preview appears immediately.
         var pdfPages: Int?
         var textPreview: String?
-        if type.conforms(to: .pdf), physical < Self.maxInlineTextBytes,
+        if type.conforms(to: .pdf), smallEnoughToRead,
            let document = PDFDocument(url: url) {
             pdfPages = document.pageCount
         } else if smallEnoughToRead,
@@ -159,7 +197,7 @@ struct QLMetadata {
             kind: kind,
             logicalBytes: logical,
             onDiskBytes: allocated,
-            isCompressed: allocated + 4_096 < logical,
+            isCompressed: isCompressed,
             created: created,
             modified: modified,
             whereFrom: whereFrom,
@@ -167,7 +205,6 @@ struct QLMetadata {
             quarantineAgent: agent,
             duplicateCopies: duplicateCopies,
             imageInfo: imageInfo,
-            avInfo: avInfo,
             pdfPages: pdfPages,
             textPreview: textPreview)
     }
@@ -214,11 +251,10 @@ struct QLMetadata {
     // MARK: Duplicate status (shared app-group index written by the app)
 
     private enum DuplicateIndex {
-        static func lookup(path: String) -> Int? {
-            guard let url = groupContainer?.appendingPathComponent("duplicates.json"),
-                  let data = try? Data(contentsOf: url),
-                  let index = try? JSONDecoder().decode([String: Int].self, from: data) else { return nil }
-            return index[path]
+        static func lookup(path: String, now: Date) -> Measurement<Int> {
+            let fileData = groupContainer.flatMap { try? Data(contentsOf: $0.appendingPathComponent("duplicates.json")) }
+            let data = fileData ?? UserDefaults(suiteName: "group.com.diskdoom")?.data(forKey: "duplicates-index")
+            return QLMeasurementPolicy.duplicate(data: data, path: path, now: now)
         }
 
         static var groupContainer: URL? {
@@ -234,8 +270,9 @@ struct QLMetadata {
     // MARK: Image metadata (ImageIO — EXIF)
 
     private static func imageMetadata(url: URL) -> ImageInfo? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, options) else { return nil }
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any] else { return nil }
         let width = (props[kCGImagePropertyPixelWidth] as? Int) ?? 0
         let height = (props[kCGImagePropertyPixelHeight] as? Int) ?? 0
         guard width > 0, height > 0 else { return nil }
@@ -267,29 +304,55 @@ struct QLMetadata {
             taken: taken)
     }
 
-    // MARK: A/V metadata (AVFoundation, synchronous)
+    // MARK: A/V metadata (AVFoundation async loading APIs)
 
-    private static func avMetadata(url: URL) -> AVInfo? {
+    /// Loads duration/resolution/bitrate via the async AVFoundation loading
+    /// APIs (macOS 13 deprecated the synchronous `asset.duration`,
+    /// `tracks(withMediaType:)`, `naturalSize`, `preferredTransform` and
+    /// `estimatedDataRate` properties). Called from the preview view's
+    /// `.task`, off the synchronous UI setup path.
+    static func loadAVInfo(url: URL) async -> AVInfo? {
+        guard !Task.isCancelled else { return nil }
         let asset = AVURLAsset(url: url)
-        let duration = CMTimeGetSeconds(asset.duration)
-        guard duration > 0, duration.isFinite else { return nil }
+        return await withTaskCancellationHandler {
+            await loadAVInfo(asset: asset)
+        } onCancel: {
+            asset.cancelLoading()
+        }
+    }
 
-        let durationText = duration >= 3_600
-            ? String(format: "%d:%02d:%02d", Int(duration) / 3_600, (Int(duration) % 3_600) / 60, Int(duration) % 60)
-            : String(format: "%d:%02d", Int(duration) / 60, Int(duration) % 60)
+    private static func loadAVInfo(asset: AVURLAsset) async -> AVInfo? {
+        guard !Task.isCancelled else { return nil }
+        guard let (duration, tracks) = try? await asset.load(.duration, .tracks) else { return nil }
+        guard !Task.isCancelled else { return nil }
+        let seconds = CMTimeGetSeconds(duration)
+        guard seconds > 0, seconds.isFinite, seconds < Double(Int.max) else { return nil }
+
+        let durationText = seconds >= 3_600
+            ? String(format: "%d:%02d:%02d", Int(seconds) / 3_600, (Int(seconds) % 3_600) / 60, Int(seconds) % 60)
+            : String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
 
         var resolution: String?
         var bitrate: Double = 0
         var hasVideo = false
-        for track in asset.tracks(withMediaType: .video) {
-            hasVideo = true
-            let size = track.naturalSize.applying(track.preferredTransform)
-            resolution = String(format: "%.0f × %.0f", abs(size.width), abs(size.height))
-            bitrate += Double(track.estimatedDataRate)
+        for track in tracks {
+            guard !Task.isCancelled else { return nil }
+            switch track.mediaType {
+            case .video:
+                hasVideo = true
+                guard let (naturalSize, transform, rate) = try? await track.load(.naturalSize, .preferredTransform, .estimatedDataRate) else { continue }
+                let size = naturalSize.applying(transform)
+                resolution = String(format: "%.0f × %.0f", abs(size.width), abs(size.height))
+                bitrate += Double(rate)
+            case .audio:
+                if let rate = try? await track.load(.estimatedDataRate) {
+                    bitrate += Double(rate)
+                }
+            default:
+                break
+            }
         }
-        for track in asset.tracks(withMediaType: .audio) {
-            bitrate += Double(track.estimatedDataRate)
-        }
+        guard !Task.isCancelled else { return nil }
         return AVInfo(
             duration: durationText,
             resolution: resolution,
@@ -301,9 +364,11 @@ struct QLMetadata {
 // MARK: - Preview payload (what to render per file kind)
 
 enum PreviewPayload {
+    static let maxPreviewPixelSize = 1_200
+
     case image(NSImage)
     case pdf(Data) // rendered pages via PDFKit view
-    case videoPoster(NSImage)
+    case video // poster + A/V specs loaded async by the view (macOS 13 async AV APIs)
     case text(String)
     case generic
 
@@ -312,19 +377,17 @@ enum PreviewPayload {
         // Same byte budget as QLMetadata.collect — this whole file was being
         // read into memory twice per preview.
         let physical = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        if type.conforms(to: .image), physical < QLMetadata.maxImageMetadataBytes,
+        if type.conforms(to: .image), physical > 0, physical < QLMetadata.maxImageMetadataBytes,
            let image = Self.thumbnail(url: url) {
             return .image(image)
         }
         if type.conforms(to: .pdf) {
-            return .pdf(Data())
+            return physical > 0 && physical < QLMetadata.maxInlineTextBytes ? .pdf(Data()) : .generic
         }
         if type.conforms(to: .movie) || type.conforms(to: .video) {
-            if physical < QLMetadata.maxVideoMetadataBytes,
-               let poster = Self.videoPoster(url: url) {
-                return .videoPoster(poster)
-            }
-            return .generic
+            // Poster frame + duration are loaded asynchronously by the view's
+            // .task (same byte budget as before — very large videos skipped).
+            return physical > 0 && physical < QLMetadata.maxVideoMetadataBytes ? .video : .generic
         }
         if physical > 0, physical < QLMetadata.maxInlineTextBytes,
            let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
@@ -336,26 +399,48 @@ enum PreviewPayload {
         return .generic
     }
 
-    /// Downsampled image (max ~1200px) — respects QL extension memory limits.
+    /// Decode only a bounded thumbnail, not a full-resolution NSImage. The
+    /// encoded byte gate alone cannot bound a highly compressed image's pixels.
     static func thumbnail(url: URL, maxPixel: Int = 1_200) -> NSImage? {
+        let pixelLimit = min(max(maxPixel, 1), maxPreviewPixelSize)
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         let options = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceThumbnailMaxPixelSize: pixelLimit,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
         ] as CFDictionary
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options),
+              cgImage.width <= pixelLimit, cgImage.height <= pixelLimit else { return nil }
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
-    /// Poster frame at ~10% into the video (sync; falls back to nil).
-    static func videoPoster(url: URL) -> NSImage? {
+    /// Poster frame at ~10% into the video (async; falls back to nil).
+    /// Returns a Sendable CGImage — the caller (main actor) builds the NSImage.
+    static func videoPoster(url: URL) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 1_200, height: 1_200)
-        let time = CMTime(seconds: min(0.5, CMTimeGetSeconds(asset.duration) * 0.1), preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        generator.maximumSize = CGSize(width: maxPreviewPixelSize, height: maxPreviewPixelSize)
+        return await withTaskCancellationHandler {
+            guard !Task.isCancelled,
+                  let duration = try? await asset.load(.duration),
+                  !Task.isCancelled else { return nil }
+            let seconds = CMTimeGetSeconds(duration)
+            guard seconds.isFinite, seconds > 0 else { return nil }
+            let time = CMTime(seconds: min(0.5, seconds * 0.1), preferredTimescale: 600)
+            guard !Task.isCancelled,
+                  let result = try? await generator.image(at: time),
+                  !Task.isCancelled,
+                  result.image.width <= maxPreviewPixelSize,
+                  result.image.height <= maxPreviewPixelSize else { return nil }
+            return result.image
+        } onCancel: {
+            asset.cancelLoading()
+            generator.cancelAllCGImageGeneration()
+        }
     }
 }
 
@@ -364,13 +449,16 @@ enum PreviewPayload {
 struct QLPreviewRootView: View {
     let content: QLPreviewContent
     @State private var pdfDocument: PDFDocument?
+    @State private var avInfo: QLMetadata.AVInfo?
+    @State private var poster: NSImage?
+    @State private var mediaLoadID: UUID?
 
     var body: some View {
         HStack(spacing: 0) {
             previewPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
-            MetadataSidebar(content: content)
+            MetadataSidebar(content: content, avInfo: avInfo)
                 .frame(width: 280)
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -378,6 +466,36 @@ struct QLPreviewRootView: View {
             if case .pdf = content.preview {
                 pdfDocument = PDFDocument(url: content.url)
             }
+        }
+        .task(id: content.url) {
+            await loadMediaInfo()
+        }
+    }
+
+    /// The synchronous UI (poster placeholder, sidebar shell) is on screen by
+    /// the time this runs. AVFoundation's async loading APIs then fill in the
+    /// poster frame and duration/resolution/bitrate — gated by the same byte
+    /// budget the old synchronous collector used. `.task` also cancels
+    /// automatically if the preview disappears before loading finishes.
+    @MainActor
+    private func loadMediaInfo() async {
+        guard !Task.isCancelled else { return }
+        let loadID = UUID()
+        mediaLoadID = loadID
+        avInfo = nil
+        poster = nil
+        let url = content.url
+        let type = UTType(filenameExtension: url.pathExtension) ?? .data
+        guard type.conforms(to: .audiovisualContent) else { return }
+        let physical = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard physical > 0, physical < QLMetadata.maxVideoMetadataBytes else { return }
+        let info = await QLMetadata.loadAVInfo(url: url)
+        guard !Task.isCancelled, mediaLoadID == loadID else { return }
+        avInfo = info
+        if case .video = content.preview,
+           let cgImage = await PreviewPayload.videoPoster(url: url) {
+            guard !Task.isCancelled, mediaLoadID == loadID else { return }
+            poster = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         }
     }
 
@@ -396,20 +514,29 @@ struct QLPreviewRootView: View {
             } else {
                 ProgressView().padding()
             }
-        case .videoPoster(let poster):
-            Image(nsImage: poster)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .padding(16)
-                .overlay(alignment: .bottomTrailing) {
-                    if let av = content.metadata.avInfo {
-                        Label(av.duration, systemImage: "play.circle.fill")
-                            .font(.callout)
-                            .padding(6)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
-                            .padding(12)
-                    }
+        case .video:
+            ZStack {
+                if let poster {
+                    Image(nsImage: poster)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    // Placeholder while the async poster/duration load runs.
+                    Image(systemName: "film")
+                        .font(.system(size: 64))
+                        .foregroundStyle(.secondary)
                 }
+            }
+            .padding(16)
+            .overlay(alignment: .bottomTrailing) {
+                if let av = avInfo {
+                    Label(av.duration, systemImage: "play.circle.fill")
+                        .font(.callout)
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .padding(12)
+                }
+            }
         case .text(let text):
             ScrollView {
                 Text(text)
@@ -451,6 +578,7 @@ private struct PDFViewRepresentable: NSViewRepresentable {
 
 private struct MetadataSidebar: View {
     let content: QLPreviewContent
+    let avInfo: QLMetadata.AVInfo? // filled in asynchronously by the root view
     private var metadata: QLMetadata { content.metadata }
 
     var body: some View {
@@ -471,10 +599,10 @@ private struct MetadataSidebar: View {
                 // Sizes + APFS compression.
                 SectionLabel("Size")
                 VStack(spacing: 6) {
-                    row("File size", ByteCountFormatter.string(fromByteCount: metadata.logicalBytes, countStyle: .file))
-                    row("On disk", ByteCountFormatter.string(fromByteCount: metadata.onDiskBytes, countStyle: .file))
+                    sizeRow("File size", metadata.logicalBytes)
+                    sizeRow("On disk", metadata.onDiskBytes)
                     if metadata.isCompressed {
-                        Label("APFS-compressed — saves \(ByteCountFormatter.string(fromByteCount: metadata.logicalBytes - metadata.onDiskBytes, countStyle: .file))",
+                        Label("Filesystem-compressed",
                               systemImage: "arrow.down.circle.fill")
                             .font(.caption2)
                             .foregroundStyle(.green)
@@ -513,13 +641,17 @@ private struct MetadataSidebar: View {
 
                 // Duplicate status.
                 SectionLabel("Duplicates")
-                if let copies = metadata.duplicateCopies {
-                    Label(copies > 1 ? "\(copies) byte-identical copies exist" : "Unique — no duplicates",
-                          systemImage: copies > 1 ? "doc.on.doc.fill" : "checkmark.circle")
+                if let copies = metadata.duplicateCopies.recordedValue,
+                   let date = metadata.duplicateCopies.measuredAt {
+                    Label("Last scan recorded \(copies) copies",
+                          systemImage: "doc.on.doc")
                         .font(.caption2)
-                        .foregroundStyle(copies > 1 ? .orange : .green)
+                        .foregroundStyle(.secondary)
+                    Text("\(date.formatted(date: .abbreviated, time: .shortened)) · \(metadata.duplicateCopies.source ?? "Duplicate scan")\nNot verified against the current file or copies.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 } else {
-                    Text("Run a duplicate scan in DiskDoom to check")
+                    Text(metadata.duplicateCopies.reason ?? "Run a duplicate scan in DiskDoom to check")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -550,7 +682,7 @@ private struct MetadataSidebar: View {
                 }
 
                 // A/V info.
-                if let av = metadata.avInfo {
+                if let av = avInfo {
                     SectionLabel("Media")
                     VStack(spacing: 6) {
                         row("Duration", av.duration)
@@ -591,6 +723,20 @@ private struct MetadataSidebar: View {
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+        }
+    }
+
+    private func sizeRow(_ label: String, _ measurement: Measurement<Int64>) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            row(label, measurement.availableValue.map {
+                ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+            } ?? "Unknown · \(measurement.statusLabel)")
+            if let date = measurement.measuredAt, let source = measurement.source {
+                Text("\(source) · \(date.formatted(date: .omitted, time: .shortened))")
+                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+            } else if let reason = measurement.reason {
+                Text(reason).font(.caption2).foregroundStyle(.tertiary)
+            }
         }
     }
 

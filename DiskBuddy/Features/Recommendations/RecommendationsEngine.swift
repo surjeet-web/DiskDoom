@@ -62,6 +62,8 @@ final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
         // ── One bounded sort (descending by size) per result list ──
         large.sort { $0.bytes > $1.bytes }
         old.sort { $0.bytes > $1.bytes }
+        stale.sort { $0.bytes > $1.bytes }
+        logs.sort { $0.bytes > $1.bytes }
         largeFiles = Array(large.prefix(Self.maxResults))
         oldFiles = Array(old.prefix(Self.maxResults))
 
@@ -84,7 +86,7 @@ final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
             caches.sort { $0.bytes > $1.bytes }
             recs.append(Recommendation(
                 title: "Clean large app caches",
-                detail: "Caches regenerate automatically; clearing never breaks apps.",
+                detail: "Many caches regenerate, but removing them may sign you out or make apps rebuild data. Review the paths first.",
                 bytes: cacheBytes,
                 confidence: .highlyRecommended,
                 paths: Self.topPaths(caches, limit: 100)))
@@ -93,7 +95,7 @@ final class RecommendationsEngine: ObservableObject, @unchecked Sendable {
         if !logs.isEmpty {
             recs.append(Recommendation(
                 title: "Clear old log files",
-                detail: "Logs older than \(oldMonths) months are diagnostic history only.",
+                detail: "Logs older than \(oldMonths) months may still be useful for troubleshooting. Review before removing.",
                 bytes: logBytes,
                 confidence: .recommended,
                 paths: Self.topPaths(logs, limit: 50)))

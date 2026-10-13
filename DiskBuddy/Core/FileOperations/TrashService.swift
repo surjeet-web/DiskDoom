@@ -20,7 +20,7 @@ enum TrashService {
     /// that bypasses staging must still be blocked.
     private static let deniedPrefixes = [
         "/System", "/usr", "/bin", "/sbin", "/dev", "/cores", "/opt",
-        "/private/var/db", "/private/var/folders/", "/private/etc",
+        "/private/var/db", "/private/var/folders", "/private/etc",
         "/Library/Extensions", "/Library/LaunchDaemons", "/Library/LaunchAgents",
         "/Library/Keychains", "/Library/Preferences/.GlobalPreferences",
     ]
@@ -33,14 +33,32 @@ enum TrashService {
 
     /// Returns a refusal reason, or nil when the path is allowed.
     static func deletionRefusal(for path: String) -> String? {
-        let p = (path as NSString).expandingTildeInPath
-        if deniedExact.contains(p) { return "system directory" }
-        for prefix in deniedPrefixes where p == prefix || p.hasPrefix(prefix + "/") {
-            return "protected system path"
+        let expanded = (path as NSString).expandingTildeInPath
+        guard expanded.hasPrefix("/") else { return "not an absolute filesystem path" }
+        let url = URL(fileURLWithPath: expanded)
+        var candidates = [url.standardizedFileURL.path,
+                          url.resolvingSymlinksInPath().standardizedFileURL.path]
+        // Foundation may leave aliases unresolved when a descendant cannot
+        // be inspected. These macOS system aliases must still fail closed.
+        for p in candidates {
+            for alias in ["/var", "/etc"] where p == alias || p.hasPrefix(alias + "/") {
+                candidates.append("/private" + p)
+            }
         }
-        let own = Bundle.main.bundlePath
-        if !own.isEmpty, p == own || p.hasPrefix(own + "/") {
-            return "this is DiskDoom itself"
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let ownURL = Bundle.main.bundleURL
+        let ownPaths = [ownURL.standardizedFileURL.path,
+                        ownURL.resolvingSymlinksInPath().standardizedFileURL.path]
+        for p in candidates {
+            if deniedExact.contains(p) || p == home || p == home + "/Library" {
+                return "system or home directory"
+            }
+            for prefix in deniedPrefixes where p == prefix || p.hasPrefix(prefix + "/") {
+                return "protected system path"
+            }
+            if ownPaths.contains(where: { p == $0 || p.hasPrefix($0 + "/") }) {
+                return "this is DiskDoom itself"
+            }
         }
         return nil
     }
@@ -69,7 +87,7 @@ enum TrashService {
             do {
                 var resultingURL: NSURL?
                 try fm.trashItem(at: url, resultingItemURL: &resultingURL)
-                let (sum, overflow) = okBytes.addingReportingOverflow(item.bytes)
+                let (sum, overflow) = okBytes.addingReportingOverflow(max(0, item.bytes))
                 okBytes = overflow ? Int64.max : sum
                 okCount += 1
             } catch let error as NSError {

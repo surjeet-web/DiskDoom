@@ -91,9 +91,73 @@ struct ScanResult: Sendable {
     let isPartial: Bool
 }
 
+/// A min-heap retains only the largest visible children while measuring every
+/// item. Discarded subtrees can be released immediately, not after the walk.
+private struct LargestScanChildren {
+    let limit: Int
+    private var heap: [ScanNode] = []
+    private var omittedCount = 0
+    private var omittedBytes: Int64 = 0
+    private var omittedFiles = 0
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    mutating func append(_ node: ScanNode) {
+        guard limit > 0 else { omit(node); return }
+        if heap.count < limit {
+            heap.append(node)
+            var index = heap.count - 1
+            while index > 0 {
+                let parent = (index - 1) / 2
+                guard heap[index].sizeBytes < heap[parent].sizeBytes else { break }
+                heap.swapAt(index, parent)
+                index = parent
+            }
+        } else if node.sizeBytes > heap[0].sizeBytes {
+            omit(heap[0])
+            heap[0] = node
+            var index = 0
+            while index * 2 + 1 < heap.count {
+                var child = index * 2 + 1
+                if child + 1 < heap.count && heap[child + 1].sizeBytes < heap[child].sizeBytes { child += 1 }
+                guard heap[child].sizeBytes < heap[index].sizeBytes else { break }
+                heap.swapAt(index, child)
+                index = child
+            }
+        } else {
+            omit(node)
+        }
+    }
+
+    private mutating func omit(_ node: ScanNode) {
+        omittedCount += 1
+        omittedBytes = RealScanEngine.saturatingAdd(omittedBytes, node.sizeBytes)
+        omittedFiles += node.fileCount
+    }
+
+    func nodes() -> [ScanNode] {
+        var result = heap.sorted { $0.sizeBytes > $1.sizeBytes }
+        if omittedCount > 0 {
+            // Never attach the parent's real path to a synthetic tail: it
+            // must not become a destructive-action target.
+            result.append(ScanNode(
+                name: "Other (\(omittedCount) items)", path: "",
+                sizeBytes: omittedBytes, category: .other, fileCount: omittedFiles,
+                collapseReason: "\(omittedCount) aggregated items — not a real folder",
+                isSyntheticAggregate: true))
+        }
+        return result
+    }
+}
+
 // MARK: - Real filesystem scanner (bounded, cancellable, error-recovering)
 
 final class RealScanEngine: ObservableObject, @unchecked Sendable {
+    private static let directoryKeys: Set<URLResourceKey> = [
+        .isDirectoryKey, .isSymbolicLinkKey, .isPackageKey, .contentModificationDateKey,
+    ]
     @Published private(set) var progress: Double = 0
     @Published private(set) var currentPath = ""
     @Published private(set) var filesFound = 0
@@ -103,11 +167,12 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
     /// Walk root and build a sized tree + flat records. Skips unreadable dirs
     /// (logs them into `skipped`) instead of failing — partial results survive.
     func scan(root: URL, label: String, options: ScanOptions) async -> ScanResult {
+        let options = Self.preparedOptions(options)
         let start = Date()
         await publish(progress: 0, path: root.path, files: 0)
-        collectInstalledIDs()
+        if !Task.isCancelled { collectInstalledIDs() }
         var records: [ScannedRecord] = []
-        records.reserveCapacity(50_000)
+        records.reserveCapacity(min(50_000, max(0, options.maxFiles)))
         var skipped: [String] = []
         var counter = 0
         var dirCount = 0
@@ -133,7 +198,7 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         let elapsed = Date().timeIntervalSince(start)
         let finalNode = node ?? ScanNode(name: label, path: root.path, sizeBytes: 0, category: .other, fileCount: 0)
         await publish(progress: 1, path: "", files: counter)
-        return ScanResult(root: finalNode, records: records, skipped: skipped, elapsed: elapsed, isPartial: !skipped.isEmpty)
+        return ScanResult(root: finalNode, records: records, skipped: skipped, elapsed: elapsed, isPartial: Task.isCancelled || !skipped.isEmpty)
     }
 
     /// (device, inode) of visited directories — kills symlink cycles,
@@ -167,7 +232,7 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         let fm = FileManager.default
         var resourceValues: URLResourceValues?
         do {
-            resourceValues = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey])
+            resourceValues = try url.resourceValues(forKeys: Self.directoryKeys)
         } catch {
             skipped.append("\(path): \(error.localizedDescription)")
             return nil
@@ -180,10 +245,11 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
             let meta = fileMeta(path: path)
             counter += 1
             if counter % 2000 == 0 { progress(path, counter) }
+            let category = classify(path: path)
             if records.count < options.maxFiles {
-                records.append(ScannedRecord(path: path, bytes: meta.logical, physical: meta.physical, modified: meta.mtime, isDirectory: false, category: classify(path: path)))
+                records.append(ScannedRecord(path: path, bytes: meta.logical, physical: meta.physical, modified: meta.mtime, isDirectory: false, category: category))
             }
-            return ScanNode(name: name, path: path, sizeBytes: meta.logical, category: classify(path: path), fileCount: 1, modified: meta.mtime, physicalBytes: meta.physical)
+            return ScanNode(name: name, path: path, sizeBytes: meta.logical, category: category, fileCount: 1, modified: meta.mtime, physicalBytes: meta.physical)
         }
         // Directory: cycle guard first (firmlinks/symlinked dirs share inodes).
         var st = stat()
@@ -231,50 +297,75 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
             }
         }
         // Directory: enumerate children.
-        var dirOptions: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        var dirOptions: FileManager.DirectoryEnumerationOptions = [.skipsSubdirectoryDescendants]
         if !options.includeHidden { dirOptions.insert(.skipsHiddenFiles) }
-        guard let children = try? fm.contentsOfDirectory(
-            at: url, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: dirOptions)
+        var enumerationErrors: [String] = []
+        // Unlike contentsOfDirectory, DirectoryEnumerator does not traverse a
+        // symlink supplied as its root. Only resolve a root link after the
+        // followSymlinks policy and directory cycle guard above accepted it;
+        // child links still pass through scanDir's own policy check.
+        let enumerationRoot = isSymlink ? url.resolvingSymlinksInPath() : url
+        guard let children = fm.enumerator(
+            at: enumerationRoot, includingPropertiesForKeys: Array(Self.directoryKeys),
+            options: dirOptions, errorHandler: { failedURL, error in
+                // Report failures below after enumeration; the handler must not
+                // capture an inout scan accumulator.
+                enumerationErrors.append("\(failedURL.path): \(error.localizedDescription)")
+                return false
+            })
         else {
             skipped.append("\(path): Operation not permitted")
             return nil
         }
-        var nodes: [ScanNode] = []
+        var retained = LargestScanChildren(limit: max(0, options.maxChildrenPerDir))
+        // Enumerators can return /private/var URLs for a /var scan root.
+        // Resolve only the directory prefix, not every child's metadata, so
+        // exclusions also work through other directory symlink aliases.
+        let exclusionParent = options.excludedPaths.isEmpty ? nil : url.resolvingSymlinksInPath().path
         var total: Int64 = 0
         var fileCount = 0
-        for child in children {
-            if Task.isCancelled { break }
-            let childPath = child.path
-            if options.excludedPaths.contains(where: { childPath == $0 || childPath.hasPrefix($0 + "/") }) { continue }
-            if let childNode = scanDir(url: child, name: child.lastPathComponent, path: childPath, depth: depth + 1, options: options, records: &records, skipped: &skipped, counter: &counter, dirCount: &dirCount, visited: &visited, budgetHit: &budgetHit, startedAt: startedAt, progress: progress) {
-                nodes.append(childNode)
-                total = Self.saturatingAdd(total, childNode.sizeBytes)
-                fileCount += childNode.fileCount
+        while !Task.isCancelled && !budgetHit {
+            let hasChild = autoreleasepool { () -> Bool in
+                guard let child = children.nextObject() as? URL else { return false }
+                let childPath = child.path
+                let resolvedChildPath = exclusionParent.map {
+                    ($0 as NSString).appendingPathComponent(child.lastPathComponent)
+                }
+                if options.excludedPaths.contains(where: { excluded in
+                    Self.path(childPath, isWithin: excluded)
+                        || resolvedChildPath.map { Self.path($0, isWithin: excluded) } == true
+                }) { return true }
+                if let childNode = scanDir(url: child, name: child.lastPathComponent, path: childPath, depth: depth + 1, options: options, records: &records, skipped: &skipped, counter: &counter, dirCount: &dirCount, visited: &visited, budgetHit: &budgetHit, startedAt: startedAt, progress: progress) {
+                    retained.append(childNode)
+                    total = Self.saturatingAdd(total, childNode.sizeBytes)
+                    fileCount += childNode.fileCount
+                }
+                return true
             }
+            if !hasChild { break }
         }
-        // Cap breadth: keep largest, aggregate the tail into "Other".
-        nodes.sort { $0.sizeBytes > $1.sizeBytes }
-        if nodes.count > options.maxChildrenPerDir {
-            let tail = nodes[options.maxChildrenPerDir...]
-            let tailBytes = tail.reduce(Int64(0)) { Self.saturatingAdd($0, $1.sizeBytes) }
-            let tailFiles = tail.reduce(0) { $0 + $1.fileCount }
-            nodes = Array(nodes.prefix(options.maxChildrenPerDir))
-            // This node represents a *tail*, not a real directory. It must
-            // never carry the parent's `path` for destructive actions —
-            // staging it used to trash the entire parent folder while the UI
-            // showed only the tail's size.
-            nodes.append(ScanNode(
-                name: "Other (\(tail.count) items)", path: "",
-                sizeBytes: tailBytes, category: .other, fileCount: tailFiles,
-                collapseReason: "\(tail.count) aggregated items — not a real folder",
-                isSyntheticAggregate: true))
-        }
-        let mtime = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        skipped.append(contentsOf: enumerationErrors)
+        let nodes = retained.nodes()
+        let mtime = resourceValues?.contentModificationDate
         return ScanNode(name: name, path: path, sizeBytes: total, category: classify(path: path), fileCount: fileCount, children: nodes, modified: mtime, physicalBytes: total)
     }
 
     // MARK: Metadata + classification
+
+    private static func preparedOptions(_ options: ScanOptions) -> ScanOptions {
+        var prepared = options
+        prepared.excludedPaths = Array(Set(options.excludedPaths.flatMap { path in
+            let url = URL(fileURLWithPath: path)
+            // Retain lexical exclusions as well as resolved ones: symlinks
+            // themselves must still be excluded, not just their destinations.
+            return [path, url.standardizedFileURL.path, url.resolvingSymlinksInPath().path]
+        }))
+        return prepared
+    }
+
+    private static func path(_ path: String, isWithin excluded: String) -> Bool {
+        path == excluded || path.hasPrefix(excluded == "/" ? "/" : excluded + "/")
+    }
 
     /// Lightweight aggregate walk for smart leaves: lstat totals only —
     /// no ScanNode allocations, no records, no DB rows. Shares the visited
@@ -297,6 +388,7 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         guard lstat(url.path, &st) == 0 else { return (0, 0) }
         if (st.st_mode & S_IFMT) != S_IFDIR {
             counter += 1
+            if counter % 5000 == 0 { progress(url.path, counter) }
             return (Int64(st.st_size), 1)
         }
         // No visited-set check here: the caller already inserted this
@@ -305,23 +397,26 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         // entry inode and zero out every smart leaf.) Still record
         // descendants so the rest of the walk dedups against them.
         _ = visited.insert(DevIno(dev: st.st_dev, ino: st.st_ino))
-        var dirOptions: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        var dirOptions: FileManager.DirectoryEnumerationOptions = [.skipsSubdirectoryDescendants]
         if !options.includeHidden { dirOptions.insert(.skipsHiddenFiles) }
-        guard let children = try? FileManager.default.contentsOfDirectory(
-            at: url, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+        guard let children = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: nil,
             options: dirOptions)
         else { return (0, 0) }
         var bytes: Int64 = 0
         var files = 0
-        for child in children {
-            if Task.isCancelled { break }
-            let sub = aggregateSubtree(
-                url: child, options: options, visited: &visited,
-                counter: &counter, skipped: &skipped,
-                budgetHit: &budgetHit, startedAt: startedAt, progress: progress)
-            bytes = Self.saturatingAdd(bytes, sub.bytes)
-            files += sub.files
-            if files % 5000 == 0 { progress(url.path, counter) }
+        while !Task.isCancelled && !budgetHit {
+            let hasChild = autoreleasepool { () -> Bool in
+                guard let child = children.nextObject() as? URL else { return false }
+                let sub = aggregateSubtree(
+                    url: child, options: options, visited: &visited,
+                    counter: &counter, skipped: &skipped,
+                    budgetHit: &budgetHit, startedAt: startedAt, progress: progress)
+                bytes = Self.saturatingAdd(bytes, sub.bytes)
+                files += sub.files
+                return true
+            }
+            if !hasChild { break }
         }
         return (bytes, files)
     }
@@ -335,7 +430,7 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         var dirCount = 0
         var visited = Set<DevIno>()
         var budgetHit = false
-        var opts = options
+        var opts = Self.preparedOptions(options)
         opts.maxDepth = 4
         let url = URL(fileURLWithPath: path)
         guard let node = scanDir(
@@ -351,8 +446,8 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
     /// Logical size + file count for a package bundle (`.app`, `.framework`,
     /// `.prefPane`, `.kext`, …).
     ///
-    /// Uses an explicit work stack rather than recursion so a pathological
-    /// bundle cannot overflow the cooperative-pool stack, and saturating
+    /// Uses a streaming enumerator rather than recursion or a pending-URL
+    /// stack, so wide bundles do not retain every entry, and saturating
     /// arithmetic so a sparse file reporting `st_size == Int64.max` cannot
     /// trap the process. Deliberately emits no `ScannedRecord`s: indexing
     /// every file inside every app would blow up the record store for no
@@ -360,37 +455,51 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
     private func measurePackage(
         url: URL, options: ScanOptions, skipped: inout [String], startedAt: Date
     ) -> (bytes: Int64, files: Int) {
+        if Task.isCancelled || Date().timeIntervalSince(startedAt) > options.maxScanSeconds {
+            skipped.append("\(url.lastPathComponent): bundle measurement stopped early — size is a lower bound")
+            return (0, 0)
+        }
+        var wrapper = stat()
+        guard lstat(url.path, &wrapper) == 0 else { return (0, 0) }
+        // Preserve lstat semantics even if a followed root link was classified
+        // as a package: count the link, not its destination's contents.
+        if (wrapper.st_mode & S_IFMT) != S_IFDIR { return (Int64(wrapper.st_size), 1) }
         var bytes: Int64 = 0
         var files = 0
-        var stack: [URL] = [url]
-        var visitedEntries = 0
+        // Deliberately descend into nested packages. URL enumeration does not
+        // follow directory symlinks; lstat still counts the link itself.
+        var enumerationOptions: FileManager.DirectoryEnumerationOptions = []
+        if !options.includeHidden { enumerationOptions.insert(.skipsHiddenFiles) }
+        guard let entries = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: nil, options: enumerationOptions)
+        else { return (0, 0) }
+        var visitedEntries = 1 // package wrapper was already visited
         var truncated = false
         // Bounded by time and entry count so one huge bundle cannot consume
         // the whole scan budget without saying so.
         let entryCap = 400_000
-        while let next = stack.popLast() {
+        while true {
             if Task.isCancelled { truncated = true; break }
-            visitedEntries += 1
-            if visitedEntries > entryCap
-                || Date().timeIntervalSince(startedAt) > options.maxScanSeconds {
+            if Date().timeIntervalSince(startedAt) > options.maxScanSeconds {
                 truncated = true
                 break
             }
-            var st = stat()
-            guard lstat(next.path, &st) == 0 else { continue }
-            if (st.st_mode & S_IFMT) == S_IFDIR {
-                // NOTE: deliberately no `.skipsPackageDescendants` here —
-                // skipping it would miss the nested frameworks/helpers that
-                // make up most of a modern app bundle's size.
-                var opts: FileManager.DirectoryEnumerationOptions = []
-                if !options.includeHidden { opts.insert(.skipsHiddenFiles) }
-                guard let kids = try? FileManager.default.contentsOfDirectory(
-                    at: next, includingPropertiesForKeys: nil, options: opts) else { continue }
-                stack.append(contentsOf: kids)
-            } else {
-                bytes = Self.saturatingAdd(bytes, Int64(st.st_size))
-                files += 1
+            let hasEntry = autoreleasepool { () -> Bool in
+                guard let next = entries.nextObject() as? URL else { return false }
+                visitedEntries += 1
+                if visitedEntries > entryCap {
+                    truncated = true
+                    return false
+                }
+                var st = stat()
+                guard lstat(next.path, &st) == 0 else { return true }
+                if (st.st_mode & S_IFMT) != S_IFDIR {
+                    bytes = Self.saturatingAdd(bytes, Int64(st.st_size))
+                    files += 1
+                }
+                return true
             }
+            if !hasEntry { break }
         }
         if truncated {
             skipped.append("\(url.lastPathComponent): bundle measurement stopped early — size is a lower bound")
@@ -448,8 +557,10 @@ final class RealScanEngine: ObservableObject, @unchecked Sendable {
         var ids = Set<String>()
         let fm = FileManager.default
         for dir in ["/Applications", fm.homeDirectoryForCurrentUser.path + "/Applications"] {
+            if Task.isCancelled { return }
             guard let apps = try? fm.contentsOfDirectory(atPath: dir) else { continue }
             for app in apps where app.hasSuffix(".app") {
+                if Task.isCancelled { return }
                 let url = URL(fileURLWithPath: "\(dir)/\(app)")
                 if let id = Bundle(url: url)?.bundleIdentifier {
                     ids.insert(id)

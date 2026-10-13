@@ -17,7 +17,7 @@ struct SmartCompressionView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Smart Compression").font(.title2.weight(.semibold))
-                    Text("Transparent file compression — same paths, nothing breaks")
+                    Text("Transparent file compression — selected files only, savings estimated")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -26,12 +26,10 @@ struct SmartCompressionView: View {
                     .disabled(engine.isAnalyzing || engine.isCompressing)
             }
             .padding(DesignTokens.Space.m)
-            // APFS has no transparent compression. Say so up front rather than
-            // letting the user start a multi-hour rewrite of their home folder
-            // that saves nothing (and temporarily doubles compressed files).
+            // Unknown capability is a refusal, not a claim about all APFS volumes.
             if !supportsCompression {
                 Label(
-                    "This volume doesn't support transparent compression (APFS doesn't have it). Compressing is disabled — the savings below are estimates only.",
+                    "Transparent compression support could not be confirmed for this volume. Compressing is disabled — the savings below are estimates only.",
                     systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)

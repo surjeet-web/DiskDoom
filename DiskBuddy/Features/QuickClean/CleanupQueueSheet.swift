@@ -24,7 +24,7 @@ struct CleanupQueueSheet: View {
             }
             Text("Cleanup Queue")
                 .font(.title2.weight(.semibold))
-            Text("\(state.cleanupItems.count) items staged · \(state.cleanupTotal.fileSizeString) to free")
+            Text("\(state.cleanupItems.count) items staged · \(state.cleanupSizeSummary)")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if !state.license.canClean {
@@ -39,7 +39,7 @@ struct CleanupQueueSheet: View {
                     LazyVStack(spacing: DesignTokens.Space.m) {
                         ForEach(groups, id: \.source) { group in
                             VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-                                Text("From \(group.source) · \(group.items.reduce(0) { $0 + $1.bytes }.fileSizeString)")
+                                Text("From \(group.source) · \(CleanupItem.sizeSummary(group.items))")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
                                 ForEach(group.items) { item in
@@ -53,7 +53,7 @@ struct CleanupQueueSheet: View {
                                             .lineLimit(1)
                                             .truncationMode(.middle)
                                         Spacer()
-                                        Text(item.bytes.fileSizeString)
+                                        Text(item.sizeLabel)
                                             .font(.callout.monospacedDigit())
                                             .foregroundStyle(.secondary)
                                         Button {
@@ -100,12 +100,12 @@ struct CleanupQueueSheet: View {
                     }
                     .buttonStyle(.bordered)
                     Spacer()
-                    Button("Move to Trash · \(state.cleanupTotal.fileSizeString)") {
+                    Button("Move to Trash") {
                         state.showDeleteConfirm = true
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
-                    .disabled(!confirmed || !state.license.canClean)
+                    .disabled(!confirmed || !state.license.canClean || state.cleanupIsMeasuring || state.cleanupItems.isEmpty)
                     .keyboardShortcut(.defaultAction)
                 }
             }
@@ -138,7 +138,7 @@ private struct DeleteConfirmSheet: View {
                 .foregroundStyle(.orange)
             Text("Move \(state.cleanupItems.count) items to Trash?")
                 .font(.title3.weight(.semibold))
-            Text("You're about to free \(state.cleanupTotal.fileSizeString). Files will be moved to your Trash via FileManager — never permanently deleted. You can restore them from there.")
+            Text("\(state.cleanupSizeSummary). Files will be moved to Trash, not permanently deleted. You can restore them from there. Moving to Trash does not reclaim storage; empty Trash later to reclaim space.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -151,6 +151,7 @@ private struct DeleteConfirmSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
+                .disabled(!state.license.canClean || state.cleanupIsMeasuring || state.cleanupItems.isEmpty)
                 .keyboardShortcut(.defaultAction)
             }
         }

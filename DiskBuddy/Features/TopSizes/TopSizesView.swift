@@ -72,6 +72,14 @@ struct TopSizesView: View {
                 .pickerStyle(.menu)
                 .frame(width: 130)
             }
+            if rows.isEmpty {
+                EmptyState(symbol: "magnifyingglass", title: "No matching folders",
+                           message: state.searchText.isEmpty
+                             ? "No folders with measurable size were found in this scan."
+                             : "No folders match ‘\(state.searchText)’. Clear Search sizes to show all folders.",
+                           actionTitle: state.searchText.isEmpty ? nil : "Clear search",
+                           action: state.searchText.isEmpty ? nil : { state.searchText = "" })
+            } else {
             List(Array(rows.enumerated()), id: \.element.id) { index, node in
                 HStack(spacing: DesignTokens.Space.s) {
                     Text("\(index + 1)")
@@ -112,6 +120,7 @@ struct TopSizesView: View {
                 }
             }
             .listStyle(.plain)
+            }
             Text("Showing \(rows.count) of \(matchingCount) items · \(rows.reduce(0) { $0 + $1.sizeBytes }.fileSizeString) shown · scan root \(state.effectiveRoot.sizeString)")
                 .font(.caption)
                 .foregroundStyle(.secondary)

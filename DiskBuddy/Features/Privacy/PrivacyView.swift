@@ -13,45 +13,55 @@ struct PrivacyView: View {
     }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { _ in
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Privacy Scanner").font(.title2.weight(.semibold))
-                    Text("Third-party SDK caches only — never browser profiles or passwords")
+                    Text("SDK path-pattern heuristics — not verified tracking; browser profiles excluded")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                PrivacyScoreGauge(score: engine.score)
+                PrivacyScoreGauge(measurement: engine.scoreMeasurement)
                 Button("Scan") { engine.scan() }
                     .buttonStyle(.borderedProminent)
                     .disabled(engine.isScanning)
             }
             .padding(DesignTokens.Space.m)
             Divider()
+            Text(engine.scoreMeasurement.reason ?? engine.scoreMeasurement.source ?? engine.scoreMeasurement.statusLabel)
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+            if let date = engine.lastScanAt {
+                Text("Last scan: \(date.formatted(date: .abbreviated, time: .shortened)) · \(engine.scoreMeasurement.statusLabel) · expires after 1 hour")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             if engine.isScanning {
-                ProgressView("Scanning for tracking data…")
+                ProgressView("Scanning for SDK path matches…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if engine.findings.isEmpty {
                 EmptyState(
-                    symbol: engine.unreadableLocationCount > 0 ? "lock.trianglebadge.exclamationmark" : "lock.shield.fill",
-                    title: engine.unreadableLocationCount > 0
-                        ? "Couldn't complete the scan"
-                        : "No tracking SDK caches found",
-                    message: engine.unreadableLocationCount > 0
-                        ? "\(engine.unreadableLocationCount) of the 4 library locations couldn't be read. Grant Full Disk Access for a complete result."
-                        : "Scanned Caches, Application Support, Containers and Group Containers — no ad, analytics or crash SDK caches present.",
-                    actionTitle: engine.unreadableLocationCount > 0 ? "Retry" : "Scan",
+                    symbol: engine.score == nil ? "questionmark.circle" : "lock.shield.fill",
+                    title: engine.score == nil ? engine.scoreMeasurement.statusLabel : "No SDK path matches found",
+                    message: engine.scoreMeasurement.reason ?? (engine.score == nil
+                        ? "Run a complete scan for a current scoped result."
+                        : "Completed the four scoped Library roots. No matching nonempty paths found; this does not verify absence of tracking."),
+                    actionTitle: "Scan",
                     action: { engine.scan() })
             } else {
                 HStack(spacing: DesignTokens.Space.xl) {
-                    Text("\(engine.findings.count) findings").font(.headline)
-                    Text(ByteFormatting.format(engine.totalBytes)).font(.headline.monospacedDigit()).foregroundStyle(.secondary)
+                    Text("\(engine.findings.count) heuristic matches").font(.headline)
+                    Text((engine.score == nil ? "At least " : "") + ByteFormatting.format(engine.totalBytes)).font(.headline.monospacedDigit()).foregroundStyle(.secondary)
                     Spacer()
                 }
                 .padding(.horizontal, DesignTokens.Space.m)
                 .padding(.vertical, DesignTokens.Space.s)
-                if engine.unreadableLocationCount > 0 {
-                    Label("\(engine.unreadableLocationCount) location(s) unreadable — result is incomplete",
+                if engine.score == nil {
+                    Label(engine.scoreMeasurement.reason ?? "Cached findings are stale — rescan before relying on them",
                           systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
@@ -81,7 +91,7 @@ struct PrivacyView: View {
                                         Text(finding.impact).font(.caption2).foregroundStyle(.tertiary)
                                     }
                                     Spacer()
-                                    Text(ByteFormatting.format(finding.bytes))
+                                    Text((finding.isSizeComplete ? "" : "At least ") + ByteFormatting.format(finding.bytes))
                                         .font(.caption.monospacedDigit())
                                     Button("Stage") {
                                         state.stage(source: "Privacy", path: finding.path, bytes: finding.bytes)
@@ -97,7 +107,7 @@ struct PrivacyView: View {
                 .listStyle(.inset)
             }
         }
-        .onAppear { if engine.findings.isEmpty { engine.scan() } }
+        .onAppear { if case .notMeasured = engine.scanMeasurement { engine.scan() } }
         .onDisappear { engine.cancel() }
     }
 
@@ -111,25 +121,26 @@ struct PrivacyView: View {
 }
 
 private struct PrivacyScoreGauge: View {
-    let score: Int
+    let measurement: Measurement<Int>
+    private var score: Int? { measurement.availableValue }
     private var color: Color {
-        switch score {
+        switch score ?? -1 {
         case 80...100: return .green
         case 50..<80: return .orange
-        default: return .red
+        default: return score == nil ? .secondary : .red
         }
     }
 
     var body: some View {
         ZStack {
             Circle().stroke(Color.secondary.opacity(0.2), lineWidth: 6).frame(width: 56, height: 56)
-            Circle().trim(from: 0, to: CGFloat(score) / 100)
+            Circle().trim(from: 0, to: CGFloat(score ?? 0) / 100)
                 .stroke(color, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                 .frame(width: 56, height: 56)
                 .rotationEffect(.degrees(-90))
             VStack(spacing: 0) {
-                Text("\(score)").font(.system(size: 16, weight: .bold, design: .rounded)).monospacedDigit()
-                Text("/100").font(.system(size: 8)).foregroundStyle(.secondary)
+                Text(score.map(String.init) ?? "—").font(.system(size: 16, weight: .bold, design: .rounded)).monospacedDigit()
+                Text(score == nil ? measurement.statusLabel : "heuristic /100").font(.system(size: 8)).foregroundStyle(.secondary)
             }
         }
     }
@@ -137,7 +148,7 @@ private struct PrivacyScoreGauge: View {
 
 #Preview {
     PrivacyView()
-        .environmentObject({ let e = PrivacyScannerEngine(); e.scan(); return e }())
+        .environmentObject(PrivacyScannerEngine())
         .environmentObject(AppState())
         .frame(width: 800, height: 600)
 }

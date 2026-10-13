@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		DD0000000000000000000101 /* Measurement.swift in QuickLook Sources */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000100 /* Measurement.swift */; };
+		DD0000000000000000000102 /* Measurement.swift in Widget Sources */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000100 /* Measurement.swift */; };
 		DD00000000000000000000F0 /* DiskBuddyWidget.appex in Embed Plug-ins */ = {isa = PBXBuildFile; fileRef = DD00000000000000000000F1 /* DiskBuddyWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy,); }; };
 		DD00000000000000000000E0 /* DiskBuddyQuickLook.appex in Embed Plug-ins */ = {isa = PBXBuildFile; fileRef = DD00000000000000000000E1 /* DiskBuddyQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy,); }; };
 /* End PBXBuildFile section */
@@ -57,6 +59,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		DD0000000000000000000100 /* Measurement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskBuddy/Core/Measurement/Measurement.swift; sourceTree = SOURCE_ROOT; };
 		C0DE00000000000000000001 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "DiskBuddy/SupportFiles/Config/Debug.xcconfig"; sourceTree = "<group>"; };
 		C0DE00000000000000000002 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "DiskBuddy/SupportFiles/Config/Release.xcconfig"; sourceTree = "<group>"; };
 		DC097AEF304EE1B9009736E9 /* DiskBuddy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DiskBuddy.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -174,6 +177,7 @@
 				DC097B0D304EE1BC009736E9 /* DiskBuddyUITests */,
 				DD00000000000000000000E2 /* DiskBuddyQuickLook */,
 				DD00000000000000000000F2 /* DiskBuddyWidget */,
+				DD0000000000000000000100 /* Measurement.swift */,
 				DC097AF0304EE1B9009736E9 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -424,6 +428,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DD0000000000000000000101 /* Measurement.swift in QuickLook Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -431,6 +436,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DD0000000000000000000102 /* Measurement.swift in Widget Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

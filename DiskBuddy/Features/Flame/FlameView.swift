@@ -1,12 +1,29 @@
 import SwiftUI
 
-// MARK: - §07 Explore: Flame Graph (visual stack + tabular breakdown, mock data)
+// MARK: - §07 Explore: Flame Graph (visual stack + tabular breakdown)
 
 struct FlameView: View {
     @EnvironmentObject var state: AppState
-    @State private var focus: ScanNode? = nil
+    @State private var drillPath: [ScanNode] = []
 
-    private var root: ScanNode { focus ?? state.effectiveRoot }
+    private var root: ScanNode {
+        guard let path = drillPath.last?.path else { return state.effectiveRoot }
+        return state.currentScanNode(path: path) ?? state.effectiveRoot
+    }
+
+    private var crumbs: [Crumb] {
+        var result: [Crumb] = [.link("All") { drillPath.removeAll() }]
+        for node in drillPath {
+            if node.id == drillPath.last?.id {
+                result.append(.here(node.name))
+            } else {
+                result.append(.link(node.name) {
+                    while drillPath.last?.id != node.id { drillPath.removeLast() }
+                })
+            }
+        }
+        return result
+    }
 
     private var layers: [[ScanNode]] {
         var result: [[ScanNode]] = [[root], root.children]
@@ -23,13 +40,13 @@ struct FlameView: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.s) {
-            if focus != nil {
+            if !drillPath.isEmpty {
                 PageHeader(
                     title: "Flame Graph",
-                    segments: [.link("All") { focus = nil }, .here(focus!.name)],
+                    segments: crumbs,
                     canGoBack: true,
-                    onBack: { focus = nil },
-                    fallback: { focus = nil })
+                    onBack: { drillPath.removeLast() },
+                    fallback: { drillPath.removeAll() })
             }
             GeometryReader { proxy in
                 VStack(spacing: 4) {
@@ -50,15 +67,18 @@ struct FlameView: View {
                                 .buttonStyle(.plain)
                                 .frame(width: max(8, (proxy.size.width - CGFloat(layer.count - 1) * 2) * frac), height: 28)
                                 .help(node.tooltip)
+                                .accessibilityLabel("Select \(node.name), \(node.sizeString)")
                             }
                         }
                     }
                     Divider()
                     List(root.children.sorted { $0.sizeBytes > $1.sizeBytes }, id: \.id) { node in
-                        HStack {
+                        HStack(spacing: DesignTokens.Space.s) {
                             Image(systemName: node.category.symbol)
                                 .foregroundStyle(node.category.color)
-                            Text(node.name).lineLimit(1)
+                            Button(node.name) { state.selectedNode = node }
+                                .buttonStyle(.plain)
+                                .lineLimit(1)
                             Spacer()
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(node.category.color.opacity(0.7))
@@ -66,15 +86,27 @@ struct FlameView: View {
                             Text(node.sizeString)
                                 .font(.callout.monospacedDigit())
                                 .frame(width: 80, alignment: .trailing)
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture { state.selectedNode = node }
-                        .onTapGesture(count: 2) {
-                            if !node.children.isEmpty { focus = node }
+                            if !node.children.isEmpty {
+                                Button("Open \(node.name)", systemImage: "chevron.right") {
+                                    drillPath.append(node)
+                                }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .help("Open \(node.name)")
+                            } else if node.isCollapsed {
+                                Button("Index \(node.name)", systemImage: "arrow.clockwise") {
+                                    state.expandNode(path: node.path)
+                                }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .help("Index this folder to browse its contents")
+                            }
                         }
                         .contextMenu {
-                            Button("Focus (drill into)") {
-                                if !node.children.isEmpty { focus = node }
+                            if !node.children.isEmpty {
+                                Button("Open folder") { drillPath.append(node) }
+                            } else if node.isCollapsed {
+                                Button("Index folder") { state.expandNode(path: node.path) }
                             }
                             if node.isActionable {
                                 Button("Stage for Cleanup") {

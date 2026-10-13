@@ -8,6 +8,12 @@ struct DiskForecastView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { _ in
+            content
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             if let forecast = engine.forecast {
                 VStack(spacing: DesignTokens.Space.l) {
@@ -74,44 +80,45 @@ struct DiskForecastView: View {
     private func forecastHeader(_ forecast: DiskForecast) -> some View {
         HStack(spacing: DesignTokens.Space.xl) {
             VStack(spacing: DesignTokens.Space.s) {
-                if let days = forecast.daysUntilFull {
+                if case .estimatedFull(let days) = forecast.riskEvidence() {
                     Text("\(days)")
                         .font(.system(size: 56, weight: .bold, design: .rounded))
                         .foregroundStyle(days <= 7 ? .red : days <= 30 ? .orange : .primary)
-                    Text("days until full")
+                    Text(days == 1 ? "1 day or less until full (estimate)" : "days until full (estimate)")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                } else if !forecast.hasReliableProjection {
+                } else if forecast.riskEvidence() == .insufficient || forecast.riskEvidence() == .stale {
                     // `daysUntilFull == nil` means either "no risk" or "not
                     // enough history" — showing a green tick for the latter
                     // would be its own lie.
                     Image(systemName: "clock.badge.questionmark")
                         .font(.system(size: 40))
                         .foregroundStyle(.secondary)
-                    Text("Not enough history")
+                    Text(forecast.riskEvidence().label)
                         .font(.title3.weight(.medium))
                         .multilineTextAlignment(.center)
                     Text("Needs \(Int(DiskForecastEngine.minimumDaySpanForProjection))+ days of snapshots")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                } else {
+                } else if forecast.riskEvidence() == .noRiskDetected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 44))
                         .foregroundStyle(.green)
-                    Text("No risk")
+                    Text("No fill risk detected")
                         .font(.title3.weight(.medium))
                     Text(forecast.trendDirection == .stable ? "Usage is stable" : "Usage is decreasing")
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 40)).foregroundStyle(.orange)
+                    Text(forecast.riskEvidence().label)
+                        .font(.title3.weight(.medium)).multilineTextAlignment(.center)
                 }
             }
             .frame(width: 180)
-            .accessibleChart(summary: "Disk forecast: \(forecast.trendDirection.label), \(forecast.dailyChangeFormatted). " +
-                (forecast.daysUntilFull.map { "Disk full in approximately \($0) days." }
-                    ?? (forecast.hasReliableProjection
-                        ? "No risk of running out of space."
-                        : "Not enough history yet to predict.")))
+            .accessibleChart(summary: "Disk forecast: \(forecast.trendDirection.label), \(forecast.dailyChangeFormatted). \(forecast.riskEvidence().label).")
 
             Divider().frame(height: 90)
 
@@ -139,6 +146,14 @@ struct DiskForecastView: View {
                 Text("\(forecast.dataPointCount) data points")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                if let latest = forecast.history.last {
+                    Text("Measured: \(latest.timestamp.formatted(date: .abbreviated, time: .shortened)) · \(latest.measurementSource ?? "Unverified source") · 24-hour freshness")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if engine.history.count > forecast.history.count {
+                    Text("\(engine.history.count - forecast.history.count) legacy/unverified, future or incompatible records retained but excluded")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
 
             Divider().frame(height: 90)
@@ -149,7 +164,7 @@ struct DiskForecastView: View {
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
                     .tracking(1)
-                if forecast.hasReliableProjection {
+                if forecast.hasReliableProjection && forecast.riskEvidence() != .stale {
                     ProjectionRow(label: "30 days", current: forecast.currentUsed, projected: forecast.projectedUsage30Days, capacity: forecast.totalCapacity)
                     ProjectionRow(label: "90 days", current: forecast.currentUsed, projected: forecast.projectedUsage90Days, capacity: forecast.totalCapacity)
                 } else {
@@ -163,7 +178,7 @@ struct DiskForecastView: View {
                 if let critical = forecast.criticalDate {
                     HStack(spacing: 4) {
                         Circle().fill(.red).frame(width: 6, height: 6)
-                        Text("Critical: \(critical.formatted(date: .abbreviated, time: .omitted))")
+                        Text("10% free: \(critical.formatted(date: .abbreviated, time: .omitted)) (not full)")
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
@@ -277,6 +292,9 @@ struct DiskForecastView: View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
             Text("Category Growth").font(.headline)
                 .padding(.horizontal, DesignTokens.Space.m)
+            Text("Comparing explicit category measurements only; missing categories are not zero.")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, DesignTokens.Space.m)
             let maxCategory = forecast.categoryGrowth.map(\.currentSize).max() ?? 1
             ForEach(forecast.categoryGrowth) { growth in
                 HStack(spacing: DesignTokens.Space.m) {
@@ -287,10 +305,10 @@ struct DiskForecastView: View {
                         .font(.callout.monospacedDigit())
                         .frame(width: 72, alignment: .trailing)
                     HStack(spacing: 4) {
-                        Image(systemName: growth.isGrowing ? "arrow.up.right" : "arrow.down.right")
+                        Image(systemName: growth.changeBytes == 0 ? "arrow.right" : growth.isGrowing ? "arrow.up.right" : "arrow.down.right")
                             .font(.caption2)
                             .foregroundStyle(growth.isGrowing ? .red : .green)
-                        Text((growth.isGrowing ? "+" : "-") + growth.changeFormatted)
+                        Text((growth.changeBytes == 0 ? "" : growth.isGrowing ? "+" : "-") + growth.changeFormatted)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(growth.isGrowing ? .red : .green)
                     }
@@ -377,8 +395,8 @@ struct DiskForecastView: View {
             Image(systemName: "chart.line.uptrend.xyaxis")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
-            Text("Not Enough Data").font(.title2.weight(.semibold))
-            Text("DiskDoom records your disk usage at every launch and every scan. After a few days you'll see usage trends and predictions here.")
+            Text(engine.forecastMeasurement.statusLabel).font(.title2.weight(.semibold))
+            Text(engine.forecastMeasurement.reason ?? "DiskDoom records disk usage at launch and scan. At least three comparable snapshots spanning seven days are needed for risk estimates.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

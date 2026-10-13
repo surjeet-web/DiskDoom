@@ -12,7 +12,7 @@ struct TreelistView: View {
                 Text("Outline")
                     .font(.headline)
                 Spacer()
-                Text("Expand rows to drill · right-click for actions")
+                Text("Expand rows to browse · Index opens collapsed folders")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -62,9 +62,11 @@ private struct TreelistRow: View {
             Text(node.name)
                 .lineLimit(1)
             if node.isCollapsed {
-                Text("▸ collapsed")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+                Button("Index folder") { state.expandNode(path: node.path) }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .disabled(!node.isActionable)
+                    .help("Index \(node.name) to show its contents")
             }
             Spacer()
             RoundedRectangle(cornerRadius: 3)

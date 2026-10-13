@@ -23,6 +23,7 @@ struct FileFeedView: View {
                         Text(monitor.isMonitoring ? "Monitoring \(monitor.watchPaths.count) folders" : "Paused")
                         Text("· \(monitor.eventsPerMinute) events/min")
                             .monospacedDigit()
+                            .help("Events observed in the last 60 seconds")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)

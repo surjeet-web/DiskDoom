@@ -14,6 +14,7 @@ struct AppArtifactInfo: Hashable, Sendable, Codable {
     let kind: String // Caches, Preferences, Application Support, …
 }
 
+@MainActor
 final class AppInventoryService: ObservableObject, @unchecked Sendable {
     // Main-confined publishes; heavy work in background Task with hops.
     @Published private(set) var apps: [AppEntry] = []
@@ -22,7 +23,7 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
     @Published private(set) var sharedArtifactOwners: Set<String> = []
     private var task: Task<Void, Never>?
 
-    private static var cacheURL: URL {
+    nonisolated private static var cacheURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/DiskBuddy/app-inventory.json")
     }
@@ -38,18 +39,25 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
 
     func scan() {
         task?.cancel()
+        isScanning = true
         task = Task { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.isScanning = true
                 self.scannedCount = 0
             }
-            let found = await Task.detached { Self.scanSync(report: { _ in }) }.value
+            let worker = Task.detached { Self.scanSync(report: { _ in }) }
+            let found = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
             guard !Task.isCancelled else {
-                await MainActor.run { self.isScanning = false }
                 return
             }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.apps = found.apps.sorted { $0.totalBytes > $1.totalBytes }
                 self.sharedArtifactOwners = found.shared
                 self.isScanning = false
@@ -70,6 +78,7 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
     func cancel() {
         task?.cancel()
         task = nil
+        isScanning = false
     }
 
     // MARK: Synchronous scan (runs detached)
@@ -82,7 +91,7 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
     /// True for macOS components that must never be uninstalled or staged.
     /// Blocks /System/*, /Applications/Utilities, and the OS's own support
     /// directories, so the UI can't invite the user to trash Safari.
-    static func isSystemBundle(_ path: String) -> Bool {
+    nonisolated static func isSystemBundle(_ path: String) -> Bool {
         let p = path.hasSuffix("/") ? String(path.dropLast()) : path
         if p.hasPrefix("/System/") || p.hasPrefix("/System") { return true }
         if p == "/Applications/Utilities" || p.hasPrefix("/Applications/Utilities/") { return true }
@@ -92,7 +101,7 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
         return false
     }
 
-    private static func scanSync(report: (Int) -> Void) -> ScanOutput {
+    nonisolated private static func scanSync(report: (Int) -> Void) -> ScanOutput {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
         let library = "\(home)/Library"
@@ -210,7 +219,7 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
         return ScanOutput(apps: apps + stale.sorted { $0.totalBytes > $1.totalBytes }, shared: shared)
     }
 
-    private static func artifactCandidates(bundleID: String, appName: String, dir: String, library: String) -> [String] {
+    nonisolated private static func artifactCandidates(bundleID: String, appName: String, dir: String, library: String) -> [String] {
         let base = "\(library)/\(dir)"
         var paths = ["\(base)/\(bundleID)"]
         // Common variants: .plist, .savedState, app-name folders.
@@ -240,7 +249,7 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
         return paths.filter { fm.fileExists(atPath: $0) }
     }
 
-    private static func ownerKey(for path: String, in dir: String) -> String {
+    nonisolated private static func ownerKey(for path: String, in dir: String) -> String {
         let comps = path.split(separator: "/").map(String.init)
         if let i = comps.lastIndex(of: dir), i + 1 < comps.count { return comps[i + 1] }
         return path
@@ -259,7 +268,7 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
     /// a bundle are counted, and saturating arithmetic so a sparse file cannot
     /// trap the process. Bounded by entry count and time — it runs during
     /// inventory on a background thread and must not stall the app.
-    static func totalSize(of path: String) -> Int64 {
+    nonisolated static func totalSize(of path: String) -> Int64 {
         var st = stat()
         guard lstat(path, &st) == 0 else { return 0 }
         if (st.st_mode & S_IFMT) != S_IFDIR { return Int64(st.st_size) }
@@ -268,11 +277,13 @@ final class AppInventoryService: ObservableObject, @unchecked Sendable {
         var stack: [String] = [path]
         var entries = 0
         let entryCap = 250_000
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
         while let dir = stack.popLast() {
-            entries += 1
-            if entries > entryCap { break }
+            if Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline { break }
             guard let kids = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
             for kid in kids {
+                entries += 1
+                if entries > entryCap || Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline { return total }
                 let child = dir.hasSuffix("/") ? dir + kid : dir + "/" + kid
                 var cst = stat()
                 guard lstat(child, &cst) == 0 else { continue }

@@ -124,7 +124,7 @@ struct SimReport: Identifiable {
     var skips: [(item: String, reason: String)] = []
 
     var summary: String {
-        "\(succeeded) cleaned · \(failed) failed · \(ByteFormatting.format(totalFreed)) freed"
+        "\(succeeded) cleaned · \(failed) failed · \(ByteFormatting.format(totalFreed)) handled (Trash may still need emptying)"
     }
 }
 
@@ -135,18 +135,26 @@ final class WhatIfSimulator: ObservableObject {
     @Published private(set) var items: [SimItem] = []
     @Published var selectedIDs: Set<UUID> = []
     @Published private(set) var isBuilding = false
+    @Published private(set) var isExecuting = false
     @Published private(set) var statusText = ""
 
     // Volume snapshot at build time.
-    @Published private(set) var totalCapacity: Int64 = 0
-    @Published private(set) var currentFree: Int64 = 0
-    @Published private(set) var currentUsed: Int64 = 0
+    @Published private(set) var capacityMeasurement: Measurement<StorageCapacity> = .notMeasured
+    var currentCapacity: Measurement<StorageCapacity> {
+        capacityMeasurement.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness)
+    }
+    var currentFree: Int64? { currentCapacity.availableValue?.freeBytes }
+    var currentUsed: Int64? { currentCapacity.availableValue?.usedBytes }
 
     // Filtering (view-bound).
     @Published var filterSource: SimSource?
     @Published var filterRisk: SimRisk?
     @Published var filterText = ""
     @Published var sortBy: SortMode = .savingsDescending
+
+    init(items: [SimItem] = []) {
+        self.items = items
+    }
 
     enum SortMode: String, CaseIterable {
         case savingsDescending = "Largest First"
@@ -159,12 +167,49 @@ final class WhatIfSimulator: ObservableObject {
     // MARK: Computed selection math
 
     var selectedSavings: Int64 {
-        items.filter { selectedIDs.contains($0.id) }.reduce(0) { $0 + $1.savings }
+        items.filter { selectedIDs.contains($0.id) }.reduce(0) {
+            let sum = $0.addingReportingOverflow(max(0, $1.savings))
+            return sum.overflow ? Int64.max : sum.partialValue
+        }
     }
-    var projectedFree: Int64 { currentFree + selectedSavings }
-    var projectedUsed: Int64 { max(0, currentUsed - selectedSavings) }
-    var currentFreePercent: Double { totalCapacity > 0 ? Double(currentFree) / Double(totalCapacity) * 100 : 0 }
-    var projectedFreePercent: Double { totalCapacity > 0 ? Double(projectedFree) / Double(totalCapacity) * 100 : 0 }
+    var selectionHasOverlaps: Bool {
+        Self.pathsOverlap(items.filter { selectedIDs.contains($0.id) }.flatMap(\.stagePaths))
+    }
+    nonisolated static func pathsOverlap(_ paths: [String]) -> Bool {
+        var targets = Set<String>()
+        var ancestors = Set<String>()
+        for raw in paths {
+            let path = ((raw as NSString).expandingTildeInPath as NSString).standardizingPath
+            if targets.contains(path) || ancestors.contains(path) { return true }
+            var parent = (path as NSString).deletingLastPathComponent
+            while !parent.isEmpty {
+                if targets.contains(parent) { return true }
+                ancestors.insert(parent)
+                if parent == "/" { break }
+                parent = (parent as NSString).deletingLastPathComponent
+            }
+            targets.insert(path)
+        }
+        return false
+    }
+    var projectionUnavailableReason: String {
+        selectionHasOverlaps ? "Overlapping targets — cannot estimate unique savings" : currentCapacity.statusLabel
+    }
+    var projectedFree: Int64? {
+        guard !selectionHasOverlaps, let capacity = currentCapacity.availableValue else { return nil }
+        return capacity.freeBytes + min(capacity.usedBytes, selectedSavings)
+    }
+    var projectedUsed: Int64? {
+        guard !selectionHasOverlaps, let capacity = currentCapacity.availableValue else { return nil }
+        return max(0, capacity.usedBytes - selectedSavings)
+    }
+    var currentFreePercent: Double? {
+        currentCapacity.availableValue.map { Double($0.freeBytes) / Double($0.totalBytes) * 100 }
+    }
+    var projectedFreePercent: Double? {
+        guard let capacity = currentCapacity.availableValue, let free = projectedFree else { return nil }
+        return Double(free) / Double(capacity.totalBytes) * 100
+    }
 
     var filteredItems: [SimItem] {
         items.filter { item in
@@ -224,14 +269,7 @@ final class WhatIfSimulator: ObservableObject {
         selectedIDs = []
 
         // Volume state (cheap, main).
-        let url = URL(fileURLWithPath: "/")
-        if let v = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
-           let total = v.volumeTotalCapacity {
-            let free = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
-            totalCapacity = Int64(total)
-            currentFree = free
-            currentUsed = Int64(total) - free
-        }
+        capacityMeasurement = StorageCapacityReader.read()
 
         // Heavy measurements off-main.
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -274,8 +312,11 @@ final class WhatIfSimulator: ObservableObject {
         }
 
         // 2. Duplicate sets (real content-hash results).
-        for set in state.dupFinder.sets where set.reclaimable > 1_000_000 {
-            let keepID = state.duplicateKeeps[set.id] ?? recommendedKeep(for: set)?.id
+        for set in state.dupFinder.sets
+            where set.reclaimable > 1_000_000 &&
+                  state.dupFinder.lastRunScanID == state.scanRoot?.id &&
+                  state.dupFinder.lastRunRecordCount == state.records.count {
+            let keepID = set.keptFile(selectedID: state.duplicateKeeps[set.id])?.id
             let paths = set.files.filter { $0.id != keepID }.map(\.path)
             built.append(SimItem(
                 title: "Duplicate set — \(set.files.count) copies",
@@ -386,17 +427,27 @@ final class WhatIfSimulator: ObservableObject {
 
     // MARK: - Execute selected (queue-routed, with report)
 
-    func executeSelected(state: AppState) -> SimReport {
+    func executeSelected(state: AppState) async -> SimReport {
         var report = SimReport()
+        guard !isExecuting else {
+            report.skipped = 1
+            report.skips.append(("Execution", "Cleanup is already running."))
+            return report
+        }
+        guard !Task.isCancelled else { return report }
+        isExecuting = true
+        defer { isExecuting = false }
         let toExecute = items.filter { selectedIDs.contains($0.id) }
         report.attempted = toExecute.count
 
         guard state.license.canClean else {
+            report.skipped = toExecute.count
             report.skips.append((item: "License", reason: "Read-only mode — activate a license to clean."))
             return report
         }
 
         var directFreed: Int64 = 0
+        var succeededIDs = Set<UUID>()
         for item in toExecute {
             switch item.directAction {
             case .emptyTrash:
@@ -404,6 +455,7 @@ final class WhatIfSimulator: ObservableObject {
                 directFreed += result.freed
                 if result.failures.isEmpty {
                     report.succeeded += 1
+                    succeededIDs.insert(item.id)
                 } else {
                     report.failed += 1
                     report.failures.append((item.title, "\(result.failures.count) items couldn't be removed"))
@@ -425,51 +477,78 @@ final class WhatIfSimulator: ObservableObject {
         }
 
         // Stage everything stageable, then run the queue (Trash) once.
-        let stageable = toExecute.filter { !$0.stagePaths.isEmpty && $0.directAction == nil && $0.manualNote == nil }
+        let candidates = toExecute.filter { !$0.stagePaths.isEmpty && $0.directAction == nil && $0.manualNote == nil }
+        var stageable: [SimItem] = []
+        for item in candidates {
+            if item.source == .duplicates {
+                // A What-If item snapshots paths at build time. Recheck the
+                // current keep decision before executing, even if a rescan or
+                // another window changed it while the simulation was open.
+                let requested = Set(item.stagePaths)
+                let stillMatches = state.dupFinder.lastRunScanID == state.scanRoot?.id &&
+                    state.dupFinder.lastRunRecordCount == state.records.count &&
+                    state.dupFinder.sets.contains { set in
+                        let keepID = set.keptFile(selectedID: state.duplicateKeeps[set.id])?.id
+                        return Set(set.files.filter { $0.id != keepID }.map(\.path)) == requested
+                    }
+                if !stillMatches {
+                    report.skipped += 1
+                    report.skips.append((item.title, "Duplicate results or the kept copy changed. Rebuild this simulation before cleaning."))
+                    continue
+                }
+            }
+            stageable.append(item)
+        }
+        var acceptedPaths = Set<String>()
+        var acceptedIdentities: [String: UUID] = [:]
+        var refusedPaths = Set<String>()
         for item in stageable {
             for path in item.stagePaths {
-                state.stage(source: "What If?", path: path)
+                let normalized = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
+                if state.stage(source: "What If?", path: normalized),
+                   let queued = state.cleanupItems.first(where: { $0.path == normalized }) {
+                    acceptedPaths.insert(normalized)
+                    acceptedIdentities[normalized] = queued.id
+                } else {
+                    refusedPaths.insert(normalized)
+                }
             }
         }
+        let readyPaths = await state.awaitCleanupMeasurements(for: acceptedIdentities)
+        refusedPaths.formUnion(acceptedPaths.subtracting(readyPaths))
+        acceptedPaths = readyPaths
         var trashResult = TrashResult(trashedBytes: 0, trashedCount: 0, failures: [])
-        if !state.cleanupItems.isEmpty {
-            trashResult = state.executeCleanup()
+        if !Task.isCancelled, state.license.canClean, !acceptedPaths.isEmpty {
+            trashResult = state.executeCleanup(onlyPaths: acceptedPaths)
+        } else {
+            refusedPaths.formUnion(acceptedPaths)
         }
 
         // Attribute queue results back to items.
         let failedPaths = Set(trashResult.failures.map(\.path))
         for item in stageable {
-            let itemFailures = item.stagePaths.filter { failedPaths.contains($0) }
+            let itemPaths = item.stagePaths.map {
+                (($0 as NSString).expandingTildeInPath as NSString).standardizingPath
+            }
+            let itemFailures = itemPaths.filter { failedPaths.contains($0) || refusedPaths.contains($0) }
             if itemFailures.isEmpty {
                 report.succeeded += 1
-                report.totalFreed += item.savings
+                succeededIDs.insert(item.id)
             } else {
                 report.failed += 1
-                let reason = trashResult.failures.first { itemFailures.contains($0.path) }?.reason ?? "Failed"
+                let reason = trashResult.failures.first { itemFailures.contains($0.path) }?.reason ?? "One or more selected paths could not be queued safely."
                 report.failures.append((item.title, reason))
             }
         }
-        report.totalFreed += directFreed
+        report.totalFreed += directFreed + trashResult.trashedBytes
 
-        // Remove executed items and reset selection.
-        let executedIDs = Set(toExecute.map(\.id))
-        items.removeAll { executedIDs.contains($0.id) }
-        selectedIDs.subtract(executedIDs)
+        // Keep failed and manual/skipped recommendations available for retry.
+        items.removeAll { succeededIDs.contains($0.id) }
+        selectedIDs.subtract(succeededIDs)
         return report
     }
 
     // MARK: - Helpers
-
-    private func recommendedKeep(for set: DuplicateSet) -> DuplicateFile? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        func rank(_ path: String) -> Int {
-            if path.hasPrefix(home + "/Desktop") { return 0 }
-            if path.hasPrefix(home + "/Documents") { return 1 }
-            if path.hasPrefix(home + "/Downloads") { return 2 }
-            return 3
-        }
-        return set.files.sorted { rank($0.path) < rank($1.path) }.first
-    }
 
     /// Permanently empty ~/.Trash (the one explicit user-intent exception).
     nonisolated private static func emptyTrashNow() -> (freed: Int64, failures: [String]) {
@@ -492,17 +571,9 @@ final class WhatIfSimulator: ObservableObject {
 
     /// Count local Time Machine snapshots (read-only tmutil).
     nonisolated private static func countLocalSnapshots() -> Int {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/tmutil")
-        process.arguments = ["listlocalsnapshots", "/"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
-            // Drain before waiting — 64 KB pipe-buffer deadlock otherwise.
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            let data = try FeatureProcessRunner.run(executable: "/usr/bin/tmutil",
+                arguments: ["listlocalsnapshots", "/"], timeout: 5)
             let output = String(data: data, encoding: .utf8) ?? ""
             return output
                 .split(separator: "\n")

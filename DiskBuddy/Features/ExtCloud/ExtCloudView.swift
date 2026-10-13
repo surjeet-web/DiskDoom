@@ -13,12 +13,7 @@ struct ExtCloudView: View {
     @State private var groupsMemo = DerivationMemo<[ExtGroup]>()
     @State private var topFilesMemo = DerivationMemo<[ScannedRecord]>()
 
-    private struct ExtGroup: Identifiable {
-        var id: String { ext }
-        let ext: String
-        let bytes: Int64
-        let files: Int
-    }
+    typealias ExtGroup = ExtensionCloudAggregation.Group
 
     /// Complete input set of a records-derived pass. `records` is only ever
     /// replaced wholesale (a new scan or a cached restore — both bump
@@ -38,14 +33,7 @@ struct ExtCloudView: View {
 
     private var groups: [ExtGroup] {
         groupsMemo(key: RecordsKey(recordsCount: state.records.count, scanDate: state.lastScanDate)) {
-            var totals: [String: (bytes: Int64, files: Int)] = [:]
-            for record in state.records where !record.isDirectory {
-                let ext = (record.path as NSString).pathExtension.lowercased()
-                let key = ext.isEmpty ? "(no extension)" : ".\(ext)"
-                totals[key, default: (0, 0)] = (totals[key]?.bytes ?? 0 + record.bytes, totals[key]?.files ?? 0 + 1)
-            }
-            return totals.map { ExtGroup(ext: $0.key, bytes: $0.value.bytes, files: $0.value.files) }
-                .sorted { $0.bytes > $1.bytes }
+            ExtensionCloudAggregation.groups(state.records.map { .init(path: $0.path, bytes: $0.bytes, isDirectory: $0.isDirectory) })
         }
     }
 
@@ -103,12 +91,15 @@ struct ExtCloudView: View {
                     .padding(.vertical, DesignTokens.Space.s)
                 }
                 Text(groups.count > kindsLimit
-                     ? "Top \(kindsLimit) of \(groups.count) kinds by size · \(groups.prefix(kindsLimit).reduce(Int64(0)) { $0 + $1.bytes }.fileSizeString) shown"
+                     ? "Top \(kindsLimit) of \(groups.count) kinds by size · \(groups.prefix(kindsLimit).reduce(Int64(0)) { ExtensionCloudAggregation.saturatingBytes($0, $1.bytes) }.fileSizeString) shown"
                      : "\(groups.count) kinds")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let ext = selectedExt {
                     Divider()
+                    Text("Largest \(min(topFiles(ext: ext).count, 30)) of \(topFiles(ext: ext).count) indexed \(ext) files · select a kind again to close")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     List(topFiles(ext: ext).prefix(30), id: \.path) { file in
                         HStack {
                             Text((file.path as NSString).lastPathComponent)
@@ -140,6 +131,39 @@ struct ExtCloudView: View {
                 }
                 .sorted { $0.bytes > $1.bytes }
         }
+    }
+}
+
+enum ExtensionCloudAggregation {
+    struct Input {
+        let path: String
+        let bytes: Int64
+        let isDirectory: Bool
+    }
+    struct Group: Identifiable, Equatable {
+        var id: String { ext }
+        let ext: String
+        let bytes: Int64
+        let files: Int
+    }
+    static func saturatingBytes(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        let (sum, overflow) = max(0, lhs).addingReportingOverflow(max(0, rhs))
+        return overflow ? .max : sum
+    }
+    static func saturatingCount(_ lhs: Int, _ rhs: Int) -> Int {
+        let (sum, overflow) = max(0, lhs).addingReportingOverflow(max(0, rhs))
+        return overflow ? .max : sum
+    }
+    static func groups(_ records: [Input]) -> [Group] {
+        var totals: [String: (bytes: Int64, files: Int)] = [:]
+        for record in records where !record.isDirectory {
+            let ext = (record.path as NSString).pathExtension.lowercased()
+            let key = ext.isEmpty ? "(no extension)" : ".\(ext)"
+            let previous = totals[key, default: (0, 0)]
+            totals[key] = (saturatingBytes(previous.bytes, record.bytes), saturatingCount(previous.files, 1))
+        }
+        return totals.map { Group(ext: $0.key, bytes: $0.value.bytes, files: $0.value.files) }
+            .sorted { $0.bytes != $1.bytes ? $0.bytes > $1.bytes : $0.ext < $1.ext }
     }
 }
 

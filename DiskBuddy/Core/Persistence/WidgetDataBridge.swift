@@ -4,13 +4,16 @@ import Foundation
 //
 // Writes a small snapshot JSON the desktop widget reads (free space, health
 // grade, top hogs, forecast) and a duplicate index the Quick Look extension
-// reads (path → copy count). Two transports for robustness with ad-hoc
+// reads (dated, last-scan path → copy count). Two transports for robustness with ad-hoc
 // signing: the group-container file (canonical) and UserDefaults(suiteName:).
 
 enum WidgetDataBridge {
     static let groupID = "group.com.diskdoom"
 
     struct Snapshot: Codable {
+        var schemaVersion: Int = 2
+        var capacity: Measurement<StorageCapacity>?
+        var scanSource: String?
         var freeBytes: Int64 = 0
         var totalBytes: Int64 = 0
         var healthGrade: String?
@@ -46,25 +49,28 @@ enum WidgetDataBridge {
         daysUntilFull: Int?,
         topHogs: [(name: String, size: Int64)]
     ) {
-        var free = freeBytes ?? 0
-        var total = totalBytes ?? 0
-        if total == 0 {
-            let url = URL(fileURLWithPath: "/")
-            if let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
-               let capacity = values.volumeTotalCapacity {
-                total = Int64(capacity)
-                free = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
+        let now = Date()
+        let capacity: Measurement<StorageCapacity>
+        if let freeBytes, let totalBytes {
+            if let value = StorageCapacity(totalBytes: totalBytes, freeBytes: freeBytes) {
+                capacity = .available(value: value, measuredAt: now, source: "App volume measurement")
+            } else {
+                capacity = .unavailable(reason: "Invalid volume capacity")
             }
+        } else {
+            capacity = StorageCapacityReader.read(measuredAt: now)
         }
 
         let snapshot = Snapshot(
-            freeBytes: free,
-            totalBytes: total,
+            capacity: capacity,
+            scanSource: lastScanDate == nil ? nil : "DiskDoom scan",
+            freeBytes: capacity.availableValue?.freeBytes ?? 0,
+            totalBytes: capacity.availableValue?.totalBytes ?? 0,
             healthGrade: healthGrade,
             lastScanDate: lastScanDate,
             daysUntilFull: daysUntilFull,
             topHogs: topHogs.map { Snapshot.Hog(name: $0.name, size: $0.size) },
-            updatedAt: Date())
+            updatedAt: now)
 
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         if let url = groupContainerURL {
@@ -75,9 +81,10 @@ enum WidgetDataBridge {
         }
     }
 
-    /// Duplicate index for the Quick Look extension: path → copy count.
+    /// Duplicate index for the Quick Look extension: last-scan path → copy count.
+    /// `scannedAt` records result publication, not verification at preview time.
     /// Capped at 10k entries so the JSON stays light.
-    static func writeDuplicateIndex(sets: [DuplicateSet]) {
+    static func writeDuplicateIndex(sets: [DuplicateSet], scannedAt: Date = Date()) {
         var index: [String: Int] = [:]
         var entries = 0
         for set in sets where entries < 10_000 {
@@ -86,7 +93,15 @@ enum WidgetDataBridge {
                 entries += 1
             }
         }
-        guard let data = try? JSONEncoder().encode(index) else { return }
+        struct DuplicateSnapshot: Codable {
+            let schemaVersion: Int
+            let scannedAt: Date
+            let source: String
+            let counts: [String: Int]
+        }
+        let snapshot = DuplicateSnapshot(schemaVersion: 2, scannedAt: scannedAt,
+                                         source: "DiskDoom duplicate scan", counts: index)
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
         if let url = groupContainerURL {
             try? data.write(to: url.appendingPathComponent("duplicates.json"), options: .atomic)
         }

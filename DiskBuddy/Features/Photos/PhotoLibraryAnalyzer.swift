@@ -63,8 +63,10 @@ final class PhotoLibraryAnalyzer: ObservableObject, @unchecked Sendable {
         accessTask = Task { [weak self] in
             guard let self else { return }
             await MainActor.run {
+                guard !token.isCancelled else { return }
                 self.access = .checking
                 self.stats = nil
+                self.isAnalyzing = false
             }
             let rawPath = customPath.trimmingCharacters(in: .whitespacesAndNewlines)
             let target = rawPath.isEmpty ? defaultPath : (rawPath as NSString).expandingTildeInPath
@@ -76,10 +78,10 @@ final class PhotoLibraryAnalyzer: ObservableObject, @unchecked Sendable {
             guard !token.isCancelled else {
                 // Was: bare `return` — which left `isAnalyzing == true`
                 // forever, so the view showed a permanent spinner.
-                await MainActor.run { self.isAnalyzing = false }
                 return
             }
             await MainActor.run {
+                guard !token.isCancelled else { return }
                 if readable {
                     self.access = .granted(path: target)
                     self.measure(path: target)
@@ -100,15 +102,18 @@ final class PhotoLibraryAnalyzer: ObservableObject, @unchecked Sendable {
         self.token = token
         measureTask = Task { [weak self] in
             guard let self else { return }
-            await MainActor.run { self.isAnalyzing = true }
+            await MainActor.run {
+                guard !token.isCancelled else { return }
+                self.isAnalyzing = true
+            }
             let stats = await Task.detached {
                 Self.measureSync(packagePath: path, token: token)
             }.value
             guard !token.isCancelled else {
-                await MainActor.run { self.isAnalyzing = false }
                 return
             }
             await MainActor.run {
+                guard !token.isCancelled else { return }
                 self.stats = stats
                 self.isAnalyzing = false
             }

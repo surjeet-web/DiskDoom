@@ -121,6 +121,23 @@ final class AppState: ObservableObject {
             case .extCloud: return "cloud.fill"
             }
         }
+
+        var purpose: String {
+            switch self {
+            case .treemap: return "Compare folder sizes as proportional tiles."
+            case .sunburst: return "Explore folders by depth in a circular map."
+            case .flame: return "Follow the largest branches of the scan."
+            case .bubbles: return "Compare folders as size-scaled circles."
+            case .mindMap: return "Trace parent and child folders side by side."
+            case .topSizes: return "Find the largest mapped folders."
+            case .ageMap: return "Compare indexed files by modification age."
+            case .folderGrid: return "Browse folders as sortable-size cards."
+            case .radial: return "Inspect two levels of folders in depth rings."
+            case .icicle: return "Compare folder sizes across levels."
+            case .treelist: return "Expand the folder hierarchy as a list."
+            case .extCloud: return "Find file types consuming the most space."
+            }
+        }
     }
 
     enum ScanPhase { case idle, scanning, done, failed }
@@ -157,6 +174,11 @@ final class AppState: ObservableObject {
     @Published var selectedApp: AppEntry? = nil
     @Published var inspectorVisible = true
     @Published var searchText = ""
+    @Published private(set) var indexedScanLabel: String?
+    /// One-shot navigation target sent by global search to the Folders browser.
+    @Published var folderSearchDestination: String?
+    /// Tracks actual index changes, including subtree expansion at the record cap.
+    @Published private(set) var searchRevision = 0
     @Published var banner: Banner? = nil
 
     @Published var showCleanup = false
@@ -165,7 +187,14 @@ final class AppState: ObservableObject {
     @Published var quickLookNode: ScanNode? = nil
     @Published var showLicense = false
 
-    @Published var cleanupItems: [CleanupItem] = []
+    @Published var cleanupItems: [CleanupItem] = [] {
+        didSet {
+            let pendingIDs = Set(cleanupItems.filter { $0.sizeState == .measuring }.map(\.id))
+            for id in Array(cleanupMeasurementTasks.keys) where !pendingIDs.contains(id) {
+                cleanupMeasurementTasks.removeValue(forKey: id)?.cancel()
+            }
+        }
+    }
     @Published var duplicateKeeps: [UUID: UUID] = [:]
     @Published var snapshots: [Snapshot] = []
     @Published var compareIDs: [UUID] = []
@@ -193,6 +222,10 @@ final class AppState: ObservableObject {
     @Published var accentName = "system"
 
     private var scanTask: Task<Void, Never>?
+    private var cachedRecordsTask: Task<Void, Never>?
+    private var expansionTask: Task<Void, Never>?
+    private var cleanupMeasurementTasks: [UUID: Task<Void, Never>] = [:]
+    private var scanGeneration = UUID()
     private var cancellables = Set<AnyCancellable>()
     private var scanRootURL: URL = URL(fileURLWithPath: "/")
 
@@ -228,7 +261,9 @@ final class AppState: ObservableObject {
     var effectiveRoot: ScanNode { scanRoot ?? ScanNode(name: "No scan", path: "/", sizeBytes: 0, category: .other, fileCount: 0) }
     var effectiveTopLevel: [ScanNode] { effectiveRoot.children }
 
-    var cleanupTotal: Int64 { cleanupItems.reduce(0) { $0 + $1.bytes } }
+    var cleanupTotal: Int64 { CleanupItem.knownTotal(cleanupItems) }
+    var cleanupSizeSummary: String { CleanupItem.sizeSummary(cleanupItems) }
+    var cleanupIsMeasuring: Bool { cleanupItems.contains { $0.sizeState == .measuring } }
 
     var ageBuckets: [AgeBucket] {
         guard !records.isEmpty else { return [] }
@@ -240,10 +275,10 @@ final class AppState: ObservableObject {
             let age = now.timeIntervalSince(record.modified)
             let bucket: Int
             // RealScanEngine.fileMeta returns `.distantPast` when `lstat` fails, so
-            // unreadable files must land in the "Never modified" bar (index 8).
+            // unreadable dates must land in the "Unknown date" bar (index 8).
             // Without this the 9th bar always rendered "0 bytes · 0 files" as if
             // it were a real measurement.
-            if record.modified == .distantPast {
+            if record.modified == .distantPast || age < 0 {
                 bucket = 8
             } else {
                 switch age {
@@ -254,9 +289,7 @@ final class AppState: ObservableObject {
                 case ..<(180 * day): bucket = 4
                 case ..<(365 * day): bucket = 5
                 case ..<(730 * day): bucket = 6
-                // Negative age = future-dated file (clock skew, restored backup).
-                // Dropping it into "Now" inflates that bar with stale mtimes, so
-                // anything outside the known ranges goes to "2+ years" instead.
+                // Remaining known dates are at least two years old.
                 default: bucket = 7
                 }
             }
@@ -264,7 +297,7 @@ final class AppState: ObservableObject {
             counts[bucket] += 1
         }
         let labels = ["Now (< 1 day)", "1 day – 1 week", "1 week – 1 month", "1 – 3 months",
-                      "3 – 6 months", "6 – 12 months", "1 – 2 years", "2+ years", "Never modified"]
+                       "3 – 6 months", "6 – 12 months", "1 – 2 years", "2+ years", "Unknown date"]
         let colors: [Color] = [.green, .green, .yellow, .yellow, .orange, .orange, .red, .red, .gray]
         return (0..<9).map { i in AgeBucket(label: labels[i], bytes: totals[i], files: counts[i], color: colors[i]) }
     }
@@ -295,6 +328,11 @@ final class AppState: ObservableObject {
         if let root { scanRootURL = root }
         if let label { scanTargetName = label }
         scanTask?.cancel()
+        cachedRecordsTask?.cancel()
+        cachedRecordsTask = nil
+        expansionTask?.cancel()
+        expansionTask = nil
+        scanGeneration = UUID()
         scanPhase = .scanning
         scanProgress = 0
         scanFiles = 0
@@ -322,13 +360,18 @@ final class AppState: ObservableObject {
             followSymlinks: followSymlinks,
             maxDepth: maxDepth,
             excludedPaths: excluded)
+        let scanner = self.scanner
+        let scanURL = scanRootURL
+        let scanLabel = scanTargetName
+        let generation = scanGeneration
         scanTask = Task { [weak self] in
             guard let self else { return }
             let result = await PerformanceMonitor.measure("RealScanEngine.scan", threshold: 30) {
-                await scanner.scan(root: scanRootURL, label: scanTargetName, options: options)
+                await scanner.scan(root: scanURL, label: scanLabel, options: options)
             }
             guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard self.scanGeneration == generation else { return }
                 PerformanceMonitor.checkMemory(label: "AppState after scan", warningMB: 600)
                 self.scanElapsed = Date().timeIntervalSince(startedAt)
                 self.applyResult(result)
@@ -349,6 +392,8 @@ final class AppState: ObservableObject {
     private func applyResult(_ result: ScanResult) {
         scanRoot = result.root
         records = result.records
+        searchRevision &+= 1
+        indexedScanLabel = scanTargetName
         skippedPaths = result.skipped
         lastScanDate = Date()
         UserDefaults.standard.set(lastScanDate, forKey: "lastScanDate")
@@ -391,32 +436,45 @@ final class AppState: ObservableObject {
     /// Launch hydration: instant tree from SQLite, records stream in after.
     /// Called by the launch coordinator; safe to call when nothing is cached.
     func restoreCachedScan() async {
-        guard scanRoot == nil,
+        let generation = scanGeneration
+        guard scanRoot == nil, scanPhase != .scanning,
               let cached = try? await ScanDatabase.shared.latestScan(),
+              scanGeneration == generation, scanRoot == nil, scanPhase != .scanning,
               let tree = cached.tree
         else { return }
         scanRoot = tree
+        searchRevision &+= 1
+        indexedScanLabel = cached.label
         scanTargetName = cached.label
         lastScanDate = cached.date
         scanElapsed = cached.elapsed
         selectedNode = tree.children.first
         let scanID = cached.id
-        Task { @MainActor [weak self] in
+        cachedRecordsTask?.cancel()
+        cachedRecordsTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var all: [ScannedRecord] = []
             var offset = 0
             while true {
                 let batch = (try? await ScanDatabase.shared.loadFiles(scanID: scanID, limit: 20_000, offset: offset)) ?? []
+                guard !Task.isCancelled, self.scanGeneration == generation else { return }
                 if batch.isEmpty { break }
                 all += batch
                 offset += batch.count
                 if Task.isCancelled { return }
             }
+            guard !Task.isCancelled, self.scanGeneration == generation else { return }
             self.records = all
+            self.searchRevision &+= 1
         }
     }
 
     func cancelScan() {
+        scanGeneration = UUID()
+        expansionTask?.cancel()
+        expansionTask = nil
+        cachedRecordsTask?.cancel()
+        cachedRecordsTask = nil
         scanTask?.cancel()
         scanTask = nil
         // Keep previous results if any; otherwise idle.
@@ -430,18 +488,36 @@ final class AppState: ObservableObject {
     /// On-demand expansion of a collapsed smart leaf: measures just that
     /// subtree and splices the children into the live tree + record index.
     func expandNode(path: String) {
-        guard let root = scanRoot else { return }
+        guard path.hasPrefix("/"), scanPhase != .scanning,
+              let node = findNode(in: scanRoot, path: path), node.isActionable, node.isCollapsed else { return }
+        expansionTask?.cancel()
         let options = ScanOptions(
             includeHidden: includeHidden,
             followSymlinks: followSymlinks,
             maxDepth: 0,
             excludedPaths: excludedPaths.map { ($0 as NSString).expandingTildeInPath })
-        let result = scanner.expandSubtree(path: path, options: options)
-        guard !result.children.isEmpty else { return }
-        scanRoot = replaceNode(in: root, matching: path, with: result.children)
-        let room = max(0, 1_000_000 - records.count)
-        records += result.records.prefix(room)
-        selectedNode = findNode(in: scanRoot, path: path)
+        let generation = scanGeneration
+        expansionTask = Task { [weak self] in
+            // Separate scanner: never share mutable scanner state with a
+            // full scan. Cancellation is forwarded to the detached walk.
+            let worker = Task.detached(priority: .userInitiated) {
+                RealScanEngine().expandSubtree(path: path, options: options)
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: { worker.cancel() }
+            guard let self, !Task.isCancelled, self.scanGeneration == generation,
+                  let root = self.scanRoot,
+                  self.findNode(in: root, path: path)?.isCollapsed == true,
+                  !result.children.isEmpty else { return }
+            self.scanRoot = self.replaceNode(in: root, matching: path, with: result.children)
+            let room = max(0, 1_000_000 - self.records.count)
+            self.records += result.records.prefix(room)
+            self.searchRevision &+= 1
+            if self.selectedNode?.path == path {
+                self.selectedNode = self.findNode(in: self.scanRoot, path: path)
+            }
+        }
     }
 
     private func replaceNode(in node: ScanNode, matching path: String, with children: [ScanNode]) -> ScanNode {
@@ -450,14 +526,30 @@ final class AppState: ObservableObject {
                 id: node.id, name: node.name, path: node.path, sizeBytes: node.sizeBytes,
                 category: node.category, fileCount: node.fileCount, children: children,
                 modified: node.modified, physicalBytes: node.physicalBytes,
-                isCollapsed: false, collapseReason: nil)
+                isCollapsed: false, collapseReason: nil,
+                isSyntheticAggregate: node.isSyntheticAggregate,
+                isPartial: node.isPartial || children.contains(where: \.isPartial))
         }
         return ScanNode(
             id: node.id, name: node.name, path: node.path, sizeBytes: node.sizeBytes,
             category: node.category, fileCount: node.fileCount,
             children: node.children.map { replaceNode(in: $0, matching: path, with: children) },
             modified: node.modified, physicalBytes: node.physicalBytes,
-            isCollapsed: node.isCollapsed, collapseReason: node.collapseReason)
+            isCollapsed: node.isCollapsed, collapseReason: node.collapseReason,
+            isSyntheticAggregate: node.isSyntheticAggregate, isPartial: node.isPartial)
+    }
+
+    /// Resolve navigation from the current scan tree, not a chart's captured
+    /// node (which becomes stale when a collapsed folder is expanded).
+    func currentScanNode(path: String) -> ScanNode? {
+        guard var node = scanRoot else { return nil }
+        while node.path != path {
+            guard let child = node.children.first(where: {
+                !$0.path.isEmpty && (path == $0.path || path.hasPrefix($0.path + "/"))
+            }) else { return nil }
+            node = child
+        }
+        return node
     }
 
     private func findNode(in node: ScanNode?, path: String) -> ScanNode? {
@@ -474,39 +566,20 @@ final class AppState: ObservableObject {
     /// Reasons a path can never be staged for deletion. Checked here AND
     /// again inside `TrashService.trash` so no code path can bypass them.
     static func isProtectedFromDeletion(_ path: String) -> String? {
-        let p = (path as NSString).expandingTildeInPath
-        guard p.hasPrefix("/") else { return "not an absolute path" }
-        // The synthetic "Other (N items)" tail node carries no path of its
-        // own; staging it used to trash its entire parent folder.
-        guard !p.isEmpty else { return "not a real filesystem item" }
-        if p == "/" || p == "/System" || p == "/Library" || p == "/Applications"
-            || p == "/Users" || p == "/private" || p == "/opt" || p == "/usr"
-            || p == "/bin" || p == "/sbin" || p == "/dev" || p == "/cores"
-            || p == "/Volumes" || p == "/Network" || p == "/home" || p == "/var" {
-            return "system directory"
-        }
-        for blocked in [
-            "/System/", "/Library/Extensions/", "/Library/LaunchDaemons/",
-            "/Library/LaunchAgents/", "/Library/Keychains/", "/private/var/db/",
-            "/private/var/folders/", "/private/etc/", "/usr/", "/bin/", "/sbin/",
-            "/dev/", "/cores/", "/Volumes/.Spotlight-V100", "/.VolumeIcon.icns",
-        ] where p.hasPrefix(blocked) {
-            return "protected system path"
-        }
-        // Never let the app delete itself.
-        let ownBundle = Bundle.main.bundlePath
-        if !ownBundle.isEmpty, p == ownBundle || p.hasPrefix(ownBundle + "/") {
-            return "this is DiskDoom itself"
-        }
-        return nil
+        let expanded = (path as NSString).expandingTildeInPath
+        guard expanded.hasPrefix("/") else { return "not an absolute path" }
+        // Use the same lexical/resolved protections as the final Trash
+        // backstop rather than maintain a second, divergent deny-list.
+        return TrashService.deletionRefusal(for: expanded)
     }
 
     /// Stage a path for cleanup. Returns false (and stages nothing) when the
     /// path is unsafe, so a caller can surface the reason.
     @discardableResult
     func stage(source: String, path: String, bytes: Int64 = -1) -> Bool {
-        let expanded = (path as NSString).expandingTildeInPath
-        guard expanded.hasPrefix("/") else { return false }
+        let raw = (path as NSString).expandingTildeInPath
+        guard raw.hasPrefix("/") else { return false }
+        let expanded = (raw as NSString).standardizingPath
         if let reason = Self.isProtectedFromDeletion(expanded) {
             banner = Banner(message: "Refused to queue \(expanded) — \(reason).", actionTitle: "OK")
             return false
@@ -526,62 +599,123 @@ final class AppState: ObservableObject {
                     return false
                 }
             }
-            let size = bytes >= 0 ? bytes : Self.measureStagedSize(at: expanded, isDirectory: isDir.boolValue)
-            cleanupItems.append(CleanupItem(source: source, path: expanded, bytes: size))
+            var st = stat()
+            // lstat prevents following a selected symlink into its target.
+            guard lstat(expanded, &st) == 0 else { return false }
+            let needsMeasurement = bytes < 0 && (st.st_mode & S_IFMT) == S_IFDIR
+            let size = bytes >= 0 ? bytes : (needsMeasurement ? 0 : max(0, Int64(st.st_size)))
+            let item = CleanupItem(source: source, path: expanded, bytes: size,
+                                   sizeState: needsMeasurement ? .measuring : (bytes >= 0 ? .provided : .measured))
+            cleanupItems.append(item)
+            if needsMeasurement { measureQueuedDirectory(item) }
         }
         return true
     }
 
-    /// Size to display for a staged item. `totalFileSizeKey` returns the
-    /// *inode* size for directories (~4 KB), which made every staged folder
-    /// report "4 KB" and "0 B freed"; measure directories properly instead.
-    static func measureStagedSize(at path: String, isDirectory: Bool) -> Int64 {
-        if isDirectory {
-            var total: Int64 = 0
-            var stack: [String] = [path]
-            var seen = 0
-            while let dir = stack.popLast() {
-                seen += 1
-                if seen > 20_000 { break } // bounded: display value only
-                guard let kids = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
-                for kid in kids {
-                    let child = dir + "/" + kid
-                    var st = stat()
-                    guard lstat(child, &st) == 0 else { continue }
-                    if (st.st_mode & S_IFMT) == S_IFDIR {
-                        stack.append(child)
-                    } else {
-                        let (s, o) = total.addingReportingOverflow(Int64(st.st_size))
-                        total = o ? Int64.max : s
-                    }
-                }
-            }
-            return total
+    /// Await only the original selected queue identities. A removed/restaged
+    /// path is not renewed consent to execute the replacement item.
+    func awaitCleanupMeasurements(for selection: [String: UUID]) async -> Set<String> {
+        let tasks = selection.values.compactMap { cleanupMeasurementTasks[$0] }
+        for task in tasks {
+            await task.value
+            if Task.isCancelled { return [] }
         }
+        guard !Task.isCancelled else { return [] }
+        return Set(selection.compactMap { path, id in
+            cleanupItems.contains { $0.path == path && $0.id == id && $0.sizeState != .measuring } ? path : nil
+        })
+    }
+
+    private func measureQueuedDirectory(_ item: CleanupItem) {
+        cleanupMeasurementTasks[item.id] = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .utility) {
+                Self.measureStagedDirectory(at: item.path)
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: { worker.cancel() }
+            guard let self, !Task.isCancelled,
+                  let index = self.cleanupItems.firstIndex(where: {
+                      $0.id == item.id && $0.path == item.path && $0.sizeState == .measuring
+                  }) else { return }
+            self.cleanupMeasurementTasks.removeValue(forKey: item.id)
+            self.cleanupItems[index].bytes = result.bytes
+            self.cleanupItems[index].sizeState = result.complete ? .measured : (result.bytes > 0 ? .lowerBound : .unknown)
+        }
+    }
+
+    /// Synchronous compatibility helper for single-file stat/tests. Queue
+    /// directory walks use the detached method above, never this on the UI.
+    nonisolated static func measureStagedSize(at path: String, isDirectory: Bool) -> Int64 {
+        if isDirectory { return measureStagedDirectory(at: path).bytes }
         var st = stat()
         guard lstat(path, &st) == 0 else { return 0 }
-        return Int64(st.st_size)
+        return max(0, Int64(st.st_size))
+    }
+
+    /// Logical contents size; a bounded streaming traversal. A partial zero
+    /// means unknown, not an assertion that the directory is empty.
+    nonisolated static func measureStagedDirectory(at path: String, entryLimit: Int = 20_000,
+                                                   timeLimit: TimeInterval = 3) -> (bytes: Int64, complete: Bool) {
+        guard !Task.isCancelled else { return (0, false) }
+        var total: Int64 = 0
+        var complete = true
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeLimit)
+        var root = stat()
+        guard lstat(path, &root) == 0, (root.st_mode & S_IFMT) == S_IFDIR else { return (0, false) }
+        guard let enumerator = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: path), includingPropertiesForKeys: nil, options: [],
+            errorHandler: { _, _ in complete = false; return true }) else { return (0, false) }
+        var seen = 0
+        while true {
+            if Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline { return (total, false) }
+            guard let child = enumerator.nextObject() as? URL else { break }
+            seen += 1
+            if seen > max(0, entryLimit) { return (total, false) }
+            var st = stat()
+            guard lstat(child.path, &st) == 0 else { complete = false; continue }
+            if (st.st_mode & S_IFMT) == S_IFLNK { enumerator.skipDescendants() }
+            guard (st.st_mode & S_IFMT) != S_IFDIR else { continue }
+            let (sum, overflow) = total.addingReportingOverflow(max(0, Int64(st.st_size)))
+            if overflow { complete = false }
+            total = overflow ? Int64.max : sum
+        }
+        return (total, complete)
     }
 
     @discardableResult
-    func executeCleanup() -> TrashResult {
+    func executeCleanup(onlyPaths: Set<String>? = nil) -> TrashResult {
         guard license.canClean else {
             banner = Banner(message: "Read-only mode — trial expired. Activate a license to clean.", actionTitle: "Activate")
             showDeleteConfirm = false
             return TrashResult(trashedBytes: 0, trashedCount: 0, failures: [])
         }
-        let result = TrashService.trash(paths: cleanupItems.map { ($0.path, $0.bytes) })
+        let selectedItems = cleanupItems.filter { onlyPaths?.contains($0.path) ?? true }
+        guard !selectedItems.isEmpty else {
+            return TrashResult(trashedBytes: 0, trashedCount: 0, failures: [])
+        }
+        guard !selectedItems.contains(where: { $0.sizeState == .measuring }) else {
+            banner = Banner(message: "Selected folders are still being measured. Wait before moving them to Trash.", actionTitle: "OK")
+            showDeleteConfirm = false
+            return TrashResult(trashedBytes: 0, trashedCount: 0, failures: selectedItems.map {
+                TrashFailure(path: $0.path, bytes: $0.bytes, reason: "Cleanup deferred while selected folders are being measured")
+            })
+        }
+        let selectedPaths = Set(selectedItems.map(\.path))
+        let result = TrashService.trash(paths: selectedItems.map { ($0.path, $0.hasKnownSize ? max(0, $0.bytes) : 0) })
         trashFailures = result.failures.map {
             TrashFailure(path: $0.path, bytes: $0.bytes, reason: $0.reason)
         }
         let failedPaths = Set(result.failures.map(\.path))
-        cleanupItems.removeAll { failedPaths.contains($0.path) }
-        freedBytes += result.trashedBytes
+        cleanupItems.removeAll { selectedPaths.contains($0.path) && !failedPaths.contains($0.path) }
+        let (movedBytes, overflow) = freedBytes.addingReportingOverflow(result.trashedBytes)
+        freedBytes = overflow ? Int64.max : movedBytes
         freedCount += result.trashedCount
         showDeleteConfirm = false
         if result.failures.isEmpty {
-            showCleanup = false
-            banner = Banner(message: "Moved \(result.trashedCount) items to Trash · \(ByteFormatting.format(result.trashedBytes)) freed", actionTitle: "Show Trash")
+            showCleanup = !cleanupItems.isEmpty
+            banner = Banner(message: "Moved \(result.trashedCount) items to Trash · \(CleanupItem.sizeSummary(selectedItems)). Storage is reclaimed only after emptying Trash.", actionTitle: "Show Trash")
             dismissBannerAfterDelay()
             notifications.postCleanupComplete(items: result.trashedCount, freed: result.trashedBytes)
         }
@@ -597,8 +731,10 @@ final class AppState: ObservableObject {
     }
 
     func dismissBannerAfterDelay() {
+        let bannerID = banner?.id
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled, self?.banner?.id == bannerID else { return }
             self?.banner = nil
         }
     }

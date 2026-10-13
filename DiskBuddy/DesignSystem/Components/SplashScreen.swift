@@ -4,15 +4,13 @@ import SwiftUI
 
 struct SplashScreen: View {
     let onComplete: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var logoScale: CGFloat = 0.6
+    @State private var logoScale: CGFloat = 0.86
     @State private var logoOpacity = 0.0
     @State private var textOpacity = 0.0
     @State private var glowOpacity = 0.0
-
-    private var reduceMotion: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    }
+    @State private var completed = false
 
     var body: some View {
         ZStack {
@@ -29,6 +27,7 @@ struct SplashScreen: View {
                 DiskDoomLogo(style: .iconOnly, size: 180)
                     .scaleEffect(logoScale)
                     .opacity(logoOpacity)
+                    .shadow(color: DiskDoomLogo.doomRed.opacity(glowOpacity * 0.22), radius: 42)
                 VStack(spacing: 8) {
                     HStack(spacing: 0) {
                         Text("DISK")
@@ -44,6 +43,18 @@ struct SplashScreen: View {
                 }
                 .opacity(textOpacity)
             }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button("Skip intro") { complete() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(20)
+                        .accessibilityLabel("Skip intro")
+                }
+                Spacer()
+            }
         }
         .onAppear {
             if reduceMotion {
@@ -52,22 +63,30 @@ struct SplashScreen: View {
                 textOpacity = 1.0
                 glowOpacity = 0.5
             } else {
-                withAnimation(.spring(response: 0.7, dampingFraction: 0.6)) {
+                withAnimation(DesignTokens.Motion.navigation) {
                     logoScale = 1.0
                     logoOpacity = 1.0
                 }
-                withAnimation(.easeOut(duration: 0.5).delay(0.3)) {
+                withAnimation(DesignTokens.Motion.entrance.delay(0.16)) {
                     textOpacity = 1.0
                 }
-                withAnimation(.easeInOut(duration: 1.5)) {
+                withAnimation(.easeOut(duration: 0.9)) {
                     glowOpacity = 1.0
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.6 : 2.0)) {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
-                    onComplete()
-                }
-            }
+        }
+        .task {
+            try? await Task.sleep(for: .seconds(reduceMotion ? 0.35 : 1.35))
+            guard !Task.isCancelled else { return }
+            complete()
+        }
+    }
+
+    private func complete() {
+        guard !completed else { return }
+        completed = true
+        withAnimation(reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.slow)) {
+            onComplete()
         }
     }
 }

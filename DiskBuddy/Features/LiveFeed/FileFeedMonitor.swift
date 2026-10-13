@@ -41,6 +41,13 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
     @Published private(set) var eventsPerMinute = 0
 
     private var sources: [DispatchSourceFileSystemObject] = []
+    /// Slow main-actor tick that recomputes the 60 s event window. WHY: the
+    /// rate used to be recomputed only when a new batch drained, so after
+    /// file activity stopped the displayed "events/min" froze at its last
+    /// non-zero value indefinitely. Recomputing on a timer makes it decay
+    /// back to 0 — a real rolling window, not a stale high-water mark.
+    private var rateTask: Task<Void, Never>?
+    private static let rateTickInterval: UInt64 = 5_000_000_000 // 5s
     private let workQueue = DispatchQueue(label: "com.diskbuddy.filefeed", qos: .utility)
     /// Snapshot state is confined to `stateQueue`; never touched elsewhere.
     private let stateQueue = DispatchQueue(label: "com.diskbuddy.filefeed.state", qos: .utility)
@@ -116,11 +123,13 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in
             self?.isMonitoring = didStart
         }
+        startRateTicks()
     }
 
     func stop() {
         for source in sources { source.cancel() }
         sources.removeAll()
+        stopRateTicks()
         DispatchQueue.main.async { [weak self] in
             self?.isMonitoring = false
         }
@@ -128,6 +137,41 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
 
     deinit {
         for source in sources { source.cancel() }
+        rateTask?.cancel()
+    }
+
+    // MARK: Rolling events/min window
+
+    /// Starts the main-actor tick that keeps `eventsPerMinute` decaying.
+    private func startRateTicks() {
+        stopRateTicks()
+        rateTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.rateTickInterval)
+                if Task.isCancelled { return }
+                self?.recomputeEventsPerMinute()
+            }
+        }
+    }
+
+    private func stopRateTicks() {
+        rateTask?.cancel()
+        rateTask = nil
+    }
+
+    /// Count of events observed in the last 60 seconds. Called on main only
+    /// (drain batches and the rate tick) so the window both rises and falls
+    /// with real activity.
+    private func recomputeEventsPerMinute() {
+        eventsPerMinute = Self.rollingWindowCount(events: events)
+    }
+
+    /// Pure windowed count: how many `events` fall inside `[now - window, now]`.
+    /// Extracted as a static so the decay math is testable without a live
+    /// monitor or real filesystem sources.
+    static func rollingWindowCount(events: [FileFeedEvent], now: Date = Date(), window: TimeInterval = 60) -> Int {
+        let cutoff = now.addingTimeInterval(-window)
+        return events.filter { $0.date > cutoff }.count
     }
 
     // MARK: Snapshot diff (confined to stateQueue)
@@ -178,8 +222,7 @@ final class FileFeedMonitor: ObservableObject, @unchecked Sendable {
             if events.count > 500 {
                 events = Array(events.prefix(500))
             }
-            let cutoff = Date().addingTimeInterval(-60)
-            eventsPerMinute = events.filter { $0.date > cutoff }.count
+            recomputeEventsPerMinute()
         }
     }
 

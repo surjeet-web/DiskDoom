@@ -95,7 +95,10 @@ struct PersistenceTests {
 
     @MainActor
     private func makeTempFile(_ name: String = "stage-me.txt", bytes: Int = 128) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
+        // Destructive-operation fixtures must not live under the protected
+        // system temporary tree (/private/var/folders).
+        let directory = try #require(FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)
+        let url = directory
             .appendingPathComponent("diskbuddy-stage-\(UUID().uuidString)-\(name)")
         try Data(repeating: 0x61, count: bytes).write(to: url)
         return url
@@ -315,12 +318,13 @@ struct MenuBarMonitorTests {
         #expect(MenuBarMonitor.formatMenuBarTitle(free: 0) == "0M")
     }
 
-    @Test func pollReadsRealDiskSpace() {
+    @Test func pollReadsRealDiskSpace() throws {
         let monitor = MenuBarMonitor()
         monitor.pollDiskSpace()
-        #expect(monitor.totalCapacity > 0, "root volume capacity must be readable")
-        #expect(monitor.freeSpace > 0)
-        #expect(monitor.freePercent > 0 && monitor.freePercent <= 100)
+        let capacity = try #require(monitor.currentCapacity.availableValue, "root volume capacity must be readable")
+        #expect(capacity.totalBytes > 0)
+        #expect(capacity.freeBytes >= 0)
+        #expect(capacity.usedPercent >= 0 && capacity.usedPercent <= 100)
         #expect(monitor.spaceState != .unknown)
         #expect(!monitor.menuBarTitle.isEmpty && monitor.menuBarTitle != "—")
         #expect(monitor.lastUpdated != nil)

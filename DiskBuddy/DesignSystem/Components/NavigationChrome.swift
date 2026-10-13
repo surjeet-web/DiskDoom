@@ -48,6 +48,7 @@ struct Crumb: Identifiable {
 // MARK: - PageHeader (SUB_PAGE / NESTED_SUB_PAGE)
 
 struct PageHeader: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let title: String
     let segments: [Crumb]
     let canGoBack: Bool
@@ -55,10 +56,12 @@ struct PageHeader: View {
     let fallback: () -> Void
 
     private func goBack() {
-        if canGoBack {
-            onBack()
-        } else {
-            fallback() // deep link / restored session: jump to a sane parent
+        withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
+            if canGoBack {
+                onBack()
+            } else {
+                fallback() // deep link / restored session: jump to a sane parent
+            }
         }
     }
 
@@ -77,7 +80,7 @@ struct PageHeader: View {
             Button(action: goBack) {
                 Image(systemName: "chevron.left")
             }
-            .buttonStyle(.plain)
+            .modifier(NavigationControlStyle())
             .help("Back (\(title))")
             .keyboardShortcut("[", modifiers: .command)
             .accessibilityLabel("Back to \(title)")
@@ -90,7 +93,11 @@ struct PageHeader: View {
                         .font(.caption)
                         .foregroundStyle(item.isEllipsis ? .tertiary : .primary)
                 } else {
-                    Button(item.crumb.label, action: item.crumb.action!)
+                    Button(item.crumb.label) {
+                        withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
+                            item.crumb.action?()
+                        }
+                    }
                         .buttonStyle(.link)
                         .font(.caption)
                 }
@@ -122,7 +129,7 @@ struct ModalHeader: View {
                     .frame(minWidth: 28, minHeight: 28)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .modifier(NavigationControlStyle())
             .help("Close \(title) (Esc)")
             .accessibilityLabel("Close \(title)")
             // NOTE: no .keyboardShortcut(.cancelAction) here on purpose —
@@ -151,7 +158,7 @@ struct WizardHeader: View {
                 Button(action: onBack) {
                     Image(systemName: "chevron.left")
                 }
-                .buttonStyle(.plain)
+                .modifier(NavigationControlStyle())
                 .help("Previous step")
                 .keyboardShortcut("[", modifiers: .command)
                 .accessibilityLabel("Back to previous step")
@@ -175,10 +182,30 @@ struct WizardHeader: View {
                     .frame(minWidth: 28, minHeight: 28)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .modifier(NavigationControlStyle())
             .help("Exit setup")
             .accessibilityLabel("Exit setup")
         }
         .onExitCommand { onClose() } // wizard is never stacked: Esc exits flow
+    }
+}
+
+/// Quiet, consistent press feedback for shared navigation controls.
+private struct NavigationControlStyle: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.buttonStyle(NavigationPressStyle(reduceMotion: reduceMotion))
+    }
+}
+
+private struct NavigationPressStyle: ButtonStyle {
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(configuration.isPressed ? Color.accentColor : Color.primary)
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.9)
+            .animation(reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.fast), value: configuration.isPressed)
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - Main window: sidebar (§36) + toolbar (§35) + inspector (§13/§14) + banners (§34) + drop zone (§33)
 
@@ -7,7 +8,27 @@ struct MainWindowView: View {
     @EnvironmentObject var topology: DiskTopologyService
     @EnvironmentObject var coordinator: LaunchCoordinator
     @EnvironmentObject var inventory: AppInventoryService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dropTargeted = false
+    @State private var observedScanRootID: UUID?
+    @State private var searchQuery = ""
+    @State private var searchResult = GlobalSearchResult.empty
+    @State private var activeSearch: SearchKey?
+    @State private var completedSearch: SearchKey?
+    @State private var appSearchRevision = 0
+    @State private var requestedSearchInventory = false
+    @FocusState private var searchFocused: Bool
+
+    private struct SearchKey: Hashable {
+        let query: String
+        let scanRevision: Int
+        let appsRevision: Int
+    }
+
+    private var searchKey: SearchKey {
+        SearchKey(query: searchQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+                  scanRevision: state.searchRevision, appsRevision: appSearchRevision)
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -18,6 +39,7 @@ struct MainWindowView: View {
                 VStack(spacing: 0) {
                     if let banner = state.banner {
                         NotificationBannerView(banner: banner)
+                            .transition(.move(edge: .top).combined(with: .opacity))
                     }
                     // §31A: limited-mode notice when FDA was skipped.
                     if (state.limitedMode || !state.permissions.fdaGranted) && state.scanPhase != .scanning {
@@ -40,7 +62,7 @@ struct MainWindowView: View {
                     }
                     ZStack {
                         detailContent
-                            .animation(.easeOut(duration: 0.18), value: state.sidebarTab)
+                            .animation(reduceMotion ? nil : DesignTokens.Motion.navigation, value: state.sidebarTab)
                         // §33 drag-and-drop overlay.
                         if dropTargeted {
                             RoundedRectangle(cornerRadius: DesignTokens.Radius.l)
@@ -77,8 +99,10 @@ struct MainWindowView: View {
                 if state.inspectorVisible {
                     InspectorView()
                         .frame(minWidth: 240, idealWidth: DesignTokens.Layout.inspectorWidth, maxWidth: 360)
+                        .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
                 }
             }
+            .animation(reduceMotion ? nil : DesignTokens.Motion.navigation, value: state.inspectorVisible)
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -88,13 +112,27 @@ struct MainWindowView: View {
                 .keyboardShortcut("r", modifiers: .command)
             }
             ToolbarItem(placement: .secondaryAction) {
-                TextField("Search", text: $state.searchText)
+                TextField("Search everywhere", text: $searchQuery)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 160)
+                    .frame(width: 220)
+                    .focused($searchFocused)
+                    .onSubmit {
+                        if activeSearch == searchKey, let first = searchResult.hits.first {
+                            openSearchResult(first)
+                        }
+                    }
+                    .help("Search sections, visualizations, installed apps, and indexed files (⌘F)")
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Find", systemImage: "magnifyingglass") { searchFocused = true }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut("f", modifiers: .command)
             }
             ToolbarItem(placement: .secondaryAction) {
                 Button {
-                    state.inspectorVisible.toggle()
+                    withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
+                        state.inspectorVisible.toggle()
+                    }
                 } label: {
                     Label("Inspector", systemImage: "sidebar.right")
                 }
@@ -131,15 +169,75 @@ struct MainWindowView: View {
         .sheet(item: $state.quickLookNode) { node in
             QuickLookSheet(node: node).environmentObject(state)
         }
-        .sheet(isPresented: $state.showLicense) {
-            LicenseView().environmentObject(state.license)
-        }
+        .animation(reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.base), value: state.banner)
         .onAppear {
             state.startupCheck()
             Task {
                 await topology.loadCapacity()
                 await topology.loadExternals()
             }
+        }
+        .onReceive(state.$scanRoot) { root in
+            if observedScanRootID != root?.id {
+                observedScanRootID = root?.id
+                state.selectedNode = nil
+            }
+        }
+        .onReceive(inventory.$apps.dropFirst()) { _ in appSearchRevision &+= 1 }
+        .onReceive(state.$sidebarTab.dropFirst()) { _ in
+            state.searchText = ""
+            searchQuery = ""
+        }
+        .onReceive(state.$exploreView.dropFirst()) { _ in
+            state.searchText = ""
+            searchQuery = ""
+        }
+        .task(id: searchKey) {
+            let key = searchKey
+            guard !key.query.isEmpty else {
+                searchResult = .empty
+                activeSearch = key
+                completedSearch = key
+                return
+            }
+            if !requestedSearchInventory && inventory.apps.isEmpty && !inventory.isScanning {
+                requestedSearchInventory = true
+                inventory.scan()
+            }
+            let apps = inventory.apps.map {
+                SearchableApp(name: $0.name, bundleID: $0.bundleID,
+                              path: $0.bundlePath.isEmpty ? $0.bundleID : $0.bundlePath,
+                              bytes: $0.totalBytes)
+            }
+            let sections = AppState.SidebarTab.allCases.map { (id: $0.rawValue, title: $0.title) }
+            let views = AppState.ExploreView.allCases.map { (id: $0.rawValue, title: $0.title) }
+            let quick = GlobalSearch.find(query: key.query, records: [], root: nil,
+                                          apps: apps, sections: sections, visualizations: views)
+            guard !Task.isCancelled, searchKey == key else { return }
+            activeSearch = key
+            searchResult = quick
+            if key.query.count < 2 {
+                completedSearch = key
+                return
+            }
+            // Sections and apps are already shown. Delay the full index pass
+            // briefly so rapid typing doesn't start multiple large searches.
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let records = state.records
+            let root = state.scanRoot
+            let worker = Task.detached(priority: .userInitiated) {
+                GlobalSearch.find(query: key.query, records: records, root: root,
+                                  apps: apps, sections: sections, visualizations: views)
+            }
+            let found = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, searchKey == key else { return }
+            searchResult = found
+            completedSearch = key
         }
     }
 
@@ -190,12 +288,12 @@ struct MainWindowView: View {
                 favoriteShortcut("~/Library", symbol: "folder")
             }
             Section("Volumes") {
-                Text("\(topology.dataVolumeName) — \(ByteFormatting.format(max(0, topology.dataTotalBytes - topology.dataFreeBytes))) / \(ByteFormatting.format(topology.dataTotalBytes))")
+                Text("\(topology.dataVolumeName) — \(topology.currentCapacity.availableValue.map { "\(ByteFormatting.format($0.usedBytes)) / \(ByteFormatting.format($0.totalBytes))" } ?? topology.currentCapacity.statusLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(topology.externals) { volume in
                     HStack {
-                        Text("\(volume.name) — \(ByteFormatting.format(volume.totalBytes - volume.freeBytes)) / \(ByteFormatting.format(volume.totalBytes))")
+                        Text("\(volume.name) — \(volume.capacity.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness).availableValue.map { "\(ByteFormatting.format($0.usedBytes)) / \(ByteFormatting.format($0.totalBytes))" } ?? volume.capacity.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness).statusLabel)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -232,7 +330,7 @@ struct MainWindowView: View {
                 Button {
                     state.showCleanup = true
                 } label: {
-                    Label("\(state.cleanupItems.count) items · \(state.cleanupTotal.fileSizeString)", systemImage: "trash")
+                    Label("\(state.cleanupItems.count) items · \(state.cleanupSizeSummary)", systemImage: "trash")
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
@@ -259,7 +357,21 @@ struct MainWindowView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        if state.scanPhase == .scanning {
+        if !searchKey.query.isEmpty {
+            GlobalSearchResultsView(
+                query: searchKey.query, result: activeSearch == searchKey ? searchResult : .empty,
+                isSearching: completedSearch != searchKey,
+                scanLabel: state.scanRoot == nil ? nil : (state.indexedScanLabel ?? state.scanTargetName),
+                appsLoading: inventory.isScanning,
+                incompleteIndex: state.scanPhase == .scanning || !state.skippedPaths.isEmpty ||
+                    (state.scanRoot != nil && state.records.isEmpty) || state.records.count >= 1_000_000,
+                onSelect: openSearchResult,
+                onClear: { searchQuery = "" })
+        } else if state.sidebarTab == .applications {
+            ApplicationsView()
+        } else if state.sidebarTab == .folders {
+            FolderExplorerView()
+        } else if state.scanPhase == .scanning {
             ScanProgressView()
         } else if state.scanPhase == .failed {
             ScanFailedView()
@@ -279,13 +391,50 @@ struct MainWindowView: View {
                     OverviewStrip()
                         .environmentObject(state)
                         .environmentObject(topology)
+                    HStack(spacing: DesignTokens.Space.m) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(state.exploreView.title)
+                                .font(.headline)
+                            Text(state.exploreView.purpose)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Menu {
+                            ForEach(state.effectiveTopLevel.sorted { $0.sizeBytes > $1.sizeBytes }.prefix(12)) { node in
+                                Button {
+                                    state.selectedNode = node
+                                    state.inspectorVisible = true
+                                } label: {
+                                    Label("\(node.name) · \(node.sizeString)", systemImage: node.category.symbol)
+                                }
+                            }
+                        } label: {
+                            Label("Top folders", systemImage: "list.bullet")
+                        }
+                        .help("Quickly inspect the 12 largest top-level folders")
+                        Menu {
+                            ForEach(AppState.ExploreView.allCases, id: \.self) { view in
+                                Button {
+                                    state.exploreView = view
+                                } label: {
+                                    Label(view.title, systemImage: state.exploreView == view ? "checkmark" : view.symbol)
+                                }
+                            }
+                        } label: {
+                            Label("All 12 views", systemImage: "square.grid.2x2")
+                        }
+                        .help("Choose one of 12 disk visualizations")
+                    }
+                    .padding(.horizontal, DesignTokens.Space.m)
+                    .padding(.top, DesignTokens.Space.s)
                     // 12-view switcher lives here (not the toolbar — a 12-segment
                     // control doesn't fit window chrome at 1100pt).
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: DesignTokens.Space.xs) {
                             ForEach(AppState.ExploreView.allCases, id: \.self) { view in
                                 Button {
-                                    withAnimation(.easeOut(duration: 0.15)) {
+                                    withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
                                         state.exploreView = view
                                     }
                                 } label: {
@@ -298,27 +447,31 @@ struct MainWindowView: View {
                                         .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
                                 }
                                 .buttonStyle(.plain)
-                                .help("\(view.title) view")
+                                .help(view.purpose)
+                                .accessibilityAddTraits(state.exploreView == view ? [.isSelected] : [])
                             }
                         }
                         .padding(.horizontal, DesignTokens.Space.m)
                         .padding(.vertical, DesignTokens.Space.xs)
                     }
                     Divider()
-                    switch state.exploreView {
-                    case .treemap: TreemapView()
-                    case .sunburst: SunburstView()
-                    case .flame: FlameView()
-                    case .bubbles: BubblesView()
-                    case .mindMap: MindMapView()
-                    case .topSizes: TopSizesView()
-                    case .ageMap: AgeMapView()
-                    case .folderGrid: FolderGridView()
-                    case .radial: RadialView()
-                    case .icicle: IcicleView()
-                    case .treelist: TreelistView()
-                    case .extCloud: ExtCloudView()
+                    Group {
+                        switch state.exploreView {
+                        case .treemap: TreemapView()
+                        case .sunburst: SunburstView()
+                        case .flame: FlameView()
+                        case .bubbles: BubblesView()
+                        case .mindMap: MindMapView()
+                        case .topSizes: TopSizesView()
+                        case .ageMap: AgeMapView()
+                        case .folderGrid: FolderGridView()
+                        case .radial: RadialView()
+                        case .icicle: IcicleView()
+                        case .treelist: TreelistView()
+                        case .extCloud: ExtCloudView()
+                        }
                     }
+                    .id(state.scanRoot?.id)
                 }
             case .duplicates: DuplicatesView()
             case .applications: ApplicationsView()
@@ -346,8 +499,45 @@ struct MainWindowView: View {
                 }
             }
             .id(state.sidebarTab) // identity per tab: transition animates on switch
-            .transition(AnyTransition.opacity.combined(with: .move(edge: .trailing)))
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.985)))
         }
+    }
+
+    private func openSearchResult(_ hit: GlobalSearchHit) {
+        state.searchText = ""
+        switch hit.kind {
+        case .section:
+            if let tab = AppState.SidebarTab(rawValue: hit.target) { state.sidebarTab = tab }
+        case .visualization:
+            if let view = AppState.ExploreView(rawValue: hit.target) {
+                state.exploreView = view
+                state.sidebarTab = .explore
+            }
+        case .application:
+            if let app = inventory.apps.first(where: { $0.bundlePath == hit.target || $0.bundleID == hit.target }) {
+                state.selectedApp = app
+                if !app.bundlePath.isEmpty {
+                    state.selectedNode = ScanNode(name: app.name, path: app.bundlePath,
+                                                  sizeBytes: app.totalBytes, category: .applications,
+                                                  fileCount: max(app.artifacts.count, 1))
+                    state.inspectorVisible = true
+                }
+                state.sidebarTab = .applications
+            }
+        case .folder, .file:
+            state.folderSearchDestination = hit.kind == .folder
+                ? hit.target : URL(fileURLWithPath: hit.target).deletingLastPathComponent().path
+            if hit.kind == .file {
+                state.selectedNode = ScanNode(name: hit.title, path: hit.target,
+                                              sizeBytes: hit.bytes ?? 0,
+                                              category: hit.category ?? .other, fileCount: 1)
+                state.inspectorVisible = true
+            } else {
+                state.selectedNode = nil
+            }
+            state.sidebarTab = .folders
+        }
+        searchQuery = ""
     }
 
     private var statusBar: some View {
@@ -382,35 +572,47 @@ private struct OverviewStrip: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var topology: DiskTopologyService
 
-    private var usedPercent: Double {
-        let total = max(topology.dataTotalBytes, 1)
-        return min(100, max(0, Double(total - topology.dataFreeBytes) / Double(total) * 100))
+    @ViewBuilder
+    private var diskRing: some View {
+        if let capacity = topology.currentCapacity.availableValue {
+            let percent = capacity.usedPercent
+            ZStack {
+                Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 6)
+                Circle()
+                    .trim(from: 0, to: percent / 100)
+                    .stroke(percent > 90 ? Color.red : percent > 75 ? Color.orange : Color.green,
+                            style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("\(Int(percent))")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+            }
+            .frame(width: 46, height: 46)
+            .accessibleProgress(value: percent / 100,
+                label: "Disk usage: \(ByteFormatting.format(capacity.usedBytes)) used of \(ByteFormatting.format(capacity.totalBytes))")
+        } else {
+            ZStack {
+                Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 6)
+                Text("—").font(.caption2)
+            }
+            .frame(width: 46, height: 46)
+            .accessibilityLabel("Disk usage: \(topology.currentCapacity.statusLabel)")
+        }
     }
 
     var body: some View {
         HStack(spacing: DesignTokens.Space.m) {
             // Disk usage ring.
             HStack(spacing: DesignTokens.Space.s) {
-                ZStack {
-                    Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 6)
-                        .frame(width: 46, height: 46)
-                    Circle()
-                        .trim(from: 0, to: usedPercent / 100)
-                        .stroke(usedPercent > 90 ? Color.red : usedPercent > 75 ? Color.orange : Color.green,
-                                style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 46, height: 46)
-                    Text("\(Int(usedPercent))")
-                        .font(.caption2.weight(.bold).monospacedDigit())
-                }
-                .accessibleProgress(
-                    value: usedPercent / 100,
-                    label: "Disk usage: \(ByteFormatting.format(max(0, topology.dataTotalBytes - topology.dataFreeBytes))) used of \(ByteFormatting.format(topology.dataTotalBytes))")
+                diskRing
                 VStack(alignment: .leading, spacing: 1) {
                     Text(topology.dataVolumeName).font(.caption.weight(.semibold))
-                    Text("\(ByteFormatting.format(topology.dataFreeBytes)) free")
+                    Text(topology.currentCapacity.availableValue.map { "\(ByteFormatting.format($0.freeBytes)) free" } ?? topology.currentCapacity.statusLabel)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
+                    if let date = topology.currentCapacity.measuredAt {
+                        Text("Measured \(date.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
             }
             Divider().frame(height: 34)
@@ -516,10 +718,26 @@ private struct NotificationBannerView: View {
 
 private struct InspectorView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
+                HStack {
+                    Text("Inspector").font(.headline)
+                    Spacer()
+                    Button {
+                        withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
+                            state.inspectorVisible = false
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close Inspector")
+                    .accessibilityLabel("Close Inspector")
+                }
                 if let node = state.selectedNode {
                     HStack(spacing: DesignTokens.Space.s) {
                         Image(systemName: node.category.symbol)
@@ -535,6 +753,16 @@ private struct InspectorView: View {
                         }
                     }
                     specRow("Total Size", value: node.sizeString)
+                    if node.isSyntheticAggregate {
+                        Label("Grouped scan result, not a real folder. Open its parent to inspect individual files.", systemImage: "square.stack.3d.up")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if node.isPartial {
+                        Label("Size is a lower bound; some contents could not be measured.", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     if node.isCollapsed, let reason = node.collapseReason {
                         Text("▸ Collapsed: \(reason) — double-click to expand")
                             .font(.caption)
@@ -610,14 +838,19 @@ private struct InspectorView: View {
                             .help(child.path)
                         }
                     }
-                    Button("Reveal in Finder") {
-                        NSWorkspace.shared.selectFile((node.path as NSString).expandingTildeInPath, inFileViewerRootedAtPath: "")
-                    }
+                    if node.isActionable {
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.selectFile((node.path as NSString).expandingTildeInPath, inFileViewerRootedAtPath: "")
+                        }
                         .buttonStyle(.bordered)
-                    Button("Stage for Cleanup") {
-                        state.stage(source: "Inspector", path: node.path, bytes: node.sizeBytes)
+                        Button("Stage for Cleanup") {
+                            // Re-measure directories rather than present partial scan
+                            // totals as a verified cleanup estimate.
+                            state.stage(source: "Inspector", path: node.path,
+                                        bytes: node.isPartial ? -1 : node.sizeBytes)
+                        }
+                        .accentCTA()
                     }
-                    .accentCTA()
                 } else {
                     VStack(spacing: DesignTokens.Space.m) {
                         Spacer()

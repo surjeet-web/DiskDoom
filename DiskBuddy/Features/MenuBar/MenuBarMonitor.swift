@@ -14,11 +14,10 @@ import UserNotifications
 @MainActor
 final class MenuBarMonitor: ObservableObject {
     // Current disk state
-    @Published private(set) var freeSpace: Int64 = 0
-    @Published private(set) var usedSpace: Int64 = 0
-    @Published private(set) var totalCapacity: Int64 = 0
-    @Published private(set) var freePercent: Double = 0
-    @Published private(set) var usedPercent: Double = 0
+    @Published private(set) var capacityMeasurement: Measurement<StorageCapacity> = .notMeasured
+    var currentCapacity: Measurement<StorageCapacity> {
+        capacityMeasurement.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness)
+    }
 
     // Display
     @Published private(set) var statusText = "—"
@@ -26,19 +25,18 @@ final class MenuBarMonitor: ObservableObject {
     @Published private(set) var spaceState: SpaceState = .unknown
     @Published private(set) var lastUpdated: Date?
 
-    // Quick stats. Exposed as computed accessors that kick off a lazy, TTL-cached,
-    // off-main measurement — so the walk happens because somebody *read* the
-    // figure (i.e. the panel is on screen), not because a timer fired.
+    // Quick stats are measured off-main when the panel appears, never while
+    // evaluating a SwiftUI body or from the background capacity timer.
     @Published private var cachedDownloadsBytes: Int64 = -1 // -1 = measuring
     @Published private var cachedTrashBytes: Int64 = -1
+    @Published private(set) var downloadsPartial = false
+    @Published private(set) var trashPartial = false
 
     var downloadsBytes: Int64 {
-        refreshQuickFolderStats(force: false)
         return cachedDownloadsBytes
     }
 
     var trashBytes: Int64 {
-        refreshQuickFolderStats(force: false)
         return cachedTrashBytes
     }
 
@@ -54,7 +52,7 @@ final class MenuBarMonitor: ObservableObject {
     /// stops here rather than saturating the disk for a minute.
     private static let quickFolderBudget: TimeInterval = 4
     /// Entry cap for the same reason.
-    private static let quickFolderMaxEntries = 150_000
+    nonisolated private static let quickFolderMaxEntries = 150_000
 
     // From last scan
     @Published private(set) var topSpaceHogs: [SpaceHog] = []
@@ -142,44 +140,40 @@ final class MenuBarMonitor: ObservableObject {
     // MARK: - Poll (main; capacity keys are cheap — no file walking)
 
     func pollDiskSpace() {
-        let url = URL(fileURLWithPath: "/")
-        guard let values = try? url.resourceValues(forKeys: [
-            .volumeAvailableCapacityKey,
-            .volumeAvailableCapacityForImportantUsageKey,
-            .volumeTotalCapacityKey,
-        ]) else { return }
-
-        let total = Int64(values.volumeTotalCapacity ?? 0)
-        let free = values.volumeAvailableCapacityForImportantUsage
-            ?? Int64(values.volumeAvailableCapacity ?? 0)
-        guard total > 0 else { return }
-        let used = total - free
+        capacityMeasurement = StorageCapacityReader.read()
+        guard let capacity = capacityMeasurement.availableValue else {
+            spaceState = .unknown
+            menuBarTitle = "—"
+            statusText = capacityMeasurement.reason ?? capacityMeasurement.statusLabel
+            lastUpdated = nil
+            return
+        }
+        let total = capacity.totalBytes
+        let free = capacity.freeBytes
         let freePct = Double(free) / Double(total) * 100
 
         // Configurable thresholds (Settings → Menu Bar).
         let defaults = UserDefaults.standard
-        let warning = defaults.object(forKey: "warningThreshold") as? Double ?? 15
-        let critical = defaults.object(forKey: "criticalThreshold") as? Double ?? 5
+        let thresholds = Self.normalizedThresholds(
+            warning: defaults.object(forKey: "warningThreshold") as? Double ?? 15,
+            critical: defaults.object(forKey: "criticalThreshold") as? Double ?? 5)
+        let warning = thresholds.warning
+        let critical = thresholds.critical
 
         let state: SpaceState
         switch freePct {
         case ..<2: state = .full
         case ..<critical: state = .critical
         case ..<warning: state = .low
-        case ..<30: state = .okay
+        case ..<max(30, warning): state = .okay
         default: state = .healthy
         }
 
         let previous = spaceState
-        freeSpace = free
-        usedSpace = used
-        totalCapacity = total
-        freePercent = freePct
-        usedPercent = 100 - freePct
         spaceState = state
         menuBarTitle = Self.formatMenuBarTitle(free: free)
         statusText = "\(ByteFormatting.format(free)) free of \(ByteFormatting.format(total))"
-        lastUpdated = Date()
+        lastUpdated = capacityMeasurement.measuredAt
 
         // Alert on degradation only (never on first sample, never twice for
         // the same state, never when alerts are disabled).
@@ -195,8 +189,7 @@ final class MenuBarMonitor: ObservableObject {
         }
 
         // Nothing walks the disk here any more. `pollDiskSpace()` only reads cheap
-        // volume capacity keys; the Downloads/Trash figures are produced lazily
-        // by `downloadsBytes` / `trashBytes` when the panel reads them.
+        // volume capacity keys; Downloads/Trash are measured when the panel appears.
     }
 
     // MARK: - Quick folders (lazy, TTL-cached, bounded)
@@ -215,7 +208,7 @@ final class MenuBarMonitor: ObservableObject {
         let deadline = Date().addingTimeInterval(Self.quickFolderBudget)
         quickFolderTask = Task { [weak self] in
             let home = FileManager.default.homeDirectoryForCurrentUser
-            let result: (Int64, Int64) = await Task.detached {
+            let result = await Task.detached(priority: .utility) {
                 let downloads = Self.directoryBytes(
                     home.appendingPathComponent("Downloads"),
                     deadline: deadline, token: token)
@@ -225,8 +218,10 @@ final class MenuBarMonitor: ObservableObject {
                 return (downloads, trash)
             }.value
             guard let self, !token.isCancelled else { return }
-            self.cachedDownloadsBytes = result.0
-            self.cachedTrashBytes = result.1
+            self.cachedDownloadsBytes = result.0.bytes
+            self.cachedTrashBytes = result.1.bytes
+            self.downloadsPartial = result.0.isPartial
+            self.trashPartial = result.1.isPartial
             self.lastQuickFolderMeasure = Date()
             self.quickFolderTask = nil
         }
@@ -243,10 +238,17 @@ final class MenuBarMonitor: ObservableObject {
         var hogs: [SpaceHog] = []
 
         // Largest individual files (> 100 MB).
-        let largeFiles = records
-            .filter { !$0.isDirectory && $0.bytes > 100_000_000 }
-            .sorted { $0.bytes > $1.bytes }
-            .prefix(5)
+        // Keep only five candidates instead of allocating and sorting every
+        // large file from a potentially million-record scan on the main actor.
+        var largeFiles: [ScannedRecord] = []
+        largeFiles.reserveCapacity(6)
+        for record in records where !record.isDirectory && record.bytes > 100_000_000 {
+            if largeFiles.count == 5, let smallest = largeFiles.last,
+               record.bytes <= smallest.bytes { continue }
+            let index = largeFiles.firstIndex { record.bytes > $0.bytes } ?? largeFiles.endIndex
+            largeFiles.insert(record, at: index)
+            if largeFiles.count > 5 { largeFiles.removeLast() }
+        }
         for file in largeFiles {
             hogs.append(SpaceHog(
                 name: (file.path as NSString).lastPathComponent,
@@ -278,6 +280,12 @@ final class MenuBarMonitor: ObservableObject {
 
     // MARK: - Formatting
 
+    nonisolated static func normalizedThresholds(warning: Double, critical: Double) -> (warning: Double, critical: Double) {
+        let warning = warning.isFinite ? min(100, max(2, warning)) : 15
+        let critical = critical.isFinite ? min(warning, max(2, critical)) : min(warning, 5)
+        return (warning, critical)
+    }
+
     /// Compact menu bar title: "45G", "4.2T", "890M".
     static func formatMenuBarTitle(free: Int64) -> String {
         let gib = Double(1_073_741_824)
@@ -308,26 +316,46 @@ final class MenuBarMonitor: ObservableObject {
     /// were quietly wrong (short by whatever the hidden entries held).
     ///
     /// Bounded by `deadline`, `quickFolderMaxEntries` and `token`.
-    nonisolated private static func directoryBytes(_ url: URL,
-                                                   deadline: Date,
-                                                   token: ScanCancellation) -> Int64 {
+    struct FolderMeasurement: Sendable {
+        var bytes: Int64 = 0
+        var isPartial = false
+    }
+
+    nonisolated static func directoryBytes(_ url: URL,
+                                                    deadline: Date,
+                                                    token: ScanCancellation) -> FolderMeasurement {
+        var measurement = FolderMeasurement()
+        guard !token.isCancelled, Date() < deadline else {
+            return FolderMeasurement(isPartial: true)
+        }
         guard let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey]) else { return 0 }
-        var total: Int64 = 0
+            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
+            errorHandler: { _, _ in
+                measurement.isPartial = true
+                return true
+            }) else { return FolderMeasurement(isPartial: true) }
         var visited = 0
         while let file = enumerator.nextObject() as? URL {
             visited += 1
             if visited & 0x3FF == 0 {
-                if token.isCancelled { break }
-                if Date() >= deadline { break }
-                if visited > quickFolderMaxEntries { break }
+                if token.isCancelled || Date() >= deadline || visited >= quickFolderMaxEntries {
+                    measurement.isPartial = true
+                    break
+                }
             }
-            if let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey]),
-               values.isDirectory != true, let size = values.fileSize {
-                total += Int64(size)
+            guard let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey]) else {
+                measurement.isPartial = true
+                continue
+            }
+            if values.isDirectory == true { continue }
+            if let size = values.fileSize {
+                let sum = measurement.bytes.addingReportingOverflow(Int64(max(0, size)))
+                measurement.bytes = sum.overflow ? Int64.max : sum.partialValue
+            } else {
+                measurement.isPartial = true
             }
         }
-        return total
+        return measurement
     }
 }

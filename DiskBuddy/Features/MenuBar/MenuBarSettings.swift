@@ -90,12 +90,9 @@ struct MenuBarSettingsTab: View {
                     .onChange(of: weeklyDigestEnabled) { enabled in
                         if enabled {
                             Task {
-                                if await requestPermission() {
-                                    UNUserNotificationCenter.current().getNotificationSettings { settings in
-                                        if settings.authorizationStatus == .authorized {
-                                            NotificationService.shared.scheduleWeeklyDigest()
-                                        }
-                                    }
+                                if await requestPermission(), await Self.isAuthorized(),
+                                   weeklyDigestEnabled, !Task.isCancelled {
+                                    NotificationService.shared.scheduleWeeklyDigest()
                                 }
                             }
                         } else {
@@ -108,9 +105,9 @@ struct MenuBarSettingsTab: View {
             }
 
             Section("Current Status") {
-                LabeledContent("Free Space", value: ByteFormatting.format(monitor.freeSpace))
-                LabeledContent("Used Space", value: ByteFormatting.format(monitor.usedSpace))
-                LabeledContent("Total Capacity", value: ByteFormatting.format(monitor.totalCapacity))
+                LabeledContent("Free Space", value: monitor.currentCapacity.availableValue.map { ByteFormatting.format($0.freeBytes) } ?? monitor.currentCapacity.statusLabel)
+                LabeledContent("Used Space", value: monitor.currentCapacity.availableValue.map { ByteFormatting.format($0.usedBytes) } ?? monitor.currentCapacity.statusLabel)
+                LabeledContent("Total Capacity", value: monitor.currentCapacity.availableValue.map { ByteFormatting.format($0.totalBytes) } ?? monitor.currentCapacity.statusLabel)
                 LabeledContent("Disk State", value: stateLabel)
                 if let updated = monitor.lastUpdated {
                     LabeledContent("Last Poll", value: updated.formatted(date: .omitted, time: .standard))
@@ -166,7 +163,13 @@ struct MenuBarSettingsTab: View {
     }
 
     private func refreshPermission() async {
+        notificationPermission = await Self.isAuthorized()
+    }
+
+    // Keep the legacy SDK's non-Sendable settings object off the UI actor;
+    // only the immutable permission result crosses the boundary.
+    nonisolated private static func isAuthorized() async -> Bool {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        notificationPermission = settings.authorizationStatus == .authorized
+        return settings.authorizationStatus == .authorized
     }
 }

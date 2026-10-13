@@ -66,9 +66,13 @@ final class ContainerScanner: ObservableObject, @unchecked Sendable {
                 return
             }
             await MainActor.run {
+                defer { self.stateLock.withLock { self.walkInFlight = false } }
+                guard !token.isCancelled else {
+                    self.isScanning = false
+                    return
+                }
                 self.containers = found
                 self.isScanning = false
-                self.stateLock.withLock { self.walkInFlight = false }
             }
         }
     }

@@ -263,6 +263,7 @@ private struct ProjectRow: View {
 
 private struct ProjectDetailSheet: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var overlays: OverlayStack
     let project: DevProject
     @Environment(\.dismiss) private var dismiss
     @State private var sortOrder = SortOrder.size
@@ -273,6 +274,7 @@ private struct ProjectDetailSheet: View {
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
+            ModalHeader(title: "Project Details", overlayID: "project-detail") { dismiss() }
             HStack {
                 Image(systemName: project.type.icon)
                     .font(.largeTitle)
@@ -285,7 +287,6 @@ private struct ProjectDetailSheet: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
-                Button("Done") { dismiss() }
             }
 
             HStack(spacing: DesignTokens.Space.xl) {
@@ -347,6 +348,8 @@ private struct ProjectDetailSheet: View {
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
         }
+        .onAppear { overlays.present("project-detail") }
+        .onDisappear { overlays.dismiss("project-detail") }
         .padding()
         .frame(width: 720, height: 520)
     }

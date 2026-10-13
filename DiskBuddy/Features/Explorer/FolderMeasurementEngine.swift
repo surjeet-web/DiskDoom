@@ -9,6 +9,17 @@ import Foundation
 
 actor FolderMeasurementEngine {
     static let shared = FolderMeasurementEngine()
+    static let measurementTTL: TimeInterval = 60
+    static let cacheLimit = 64
+
+    private let perform: @Sendable (String, Bool) throws -> FolderMeasurement
+    private let canRead: @Sendable (String) -> Bool
+
+    init(perform: (@Sendable (String, Bool) throws -> FolderMeasurement)? = nil,
+         canRead: @escaping @Sendable (String) -> Bool = { !FileManager.default.fileExists(atPath: $0) || FileManager.default.isReadableFile(atPath: $0) }) {
+        self.perform = perform ?? { try Self.performMeasurement(path: $0, includeHidden: $1) }
+        self.canRead = canRead
+    }
 
     private struct DirectoryAccumulator {
         var totalSize: Int64 = 0
@@ -20,25 +31,54 @@ actor FolderMeasurementEngine {
     }
 
     private var cache: [FolderMeasurementCacheKey: FolderMeasurement] = [:]
-    private var inProgress: [FolderMeasurementCacheKey: Task<FolderMeasurement, Error>] = [:]
+    private var inProgress: [FolderMeasurementCacheKey: (id: UUID, task: Task<FolderMeasurement, Error>)] = [:]
 
-    func measure(path: String, includeHidden: Bool = false, forceRefresh: Bool = false) async throws -> FolderMeasurement {
+    func measure(path: String, includeHidden: Bool = false, forceRefresh: Bool = false, now: Date = Date()) async throws -> FolderMeasurement {
         let canonical = canonicalPath(path)
         let key = FolderMeasurementCacheKey(path: canonical, includesHidden: includeHidden)
-        if !forceRefresh, let cached = cache[key] { return cached }
-        if !forceRefresh, let existing = inProgress[key] { return try await existing.value }
+        cache = cache.filter { $0.value.evidence(now: now).availableValue != nil && !$0.value.isPartial }
+        guard canRead(canonical) else {
+            cache[key] = nil
+            throw ExplorerError.accessDenied(canonical)
+        }
+        if !forceRefresh, var cached = cache[key] {
+            cached.measurementSource = "Memory cache · filesystem traversal (logical bytes)"
+            return cached
+        }
+        if !forceRefresh, let existing = inProgress[key] {
+            let result = try await existing.task.value
+            try Task.checkCancellation()
+            return result
+        }
+        cache[key] = nil
+        let perform = self.perform
+        let requestID = UUID()
 
         let task = Task.detached(priority: .userInitiated) {
-            try Self.performMeasurement(path: canonical, includeHidden: includeHidden)
+            try perform(canonical, includeHidden)
         }
-        inProgress[key] = task
+        inProgress[key] = (requestID, task)
         do {
             let result = try await task.value
+            try Task.checkCancellation()
+            guard canRead(canonical) else {
+                throw ExplorerError.accessDenied(canonical)
+            }
+            guard inProgress[key]?.id == requestID else { return result }
             inProgress[key] = nil
-            if !Task.isCancelled { cache[key] = result }
+            if !result.isPartial {
+                cache[key] = result
+                if cache.count > Self.cacheLimit,
+                   let oldest = cache.min(by: { $0.value.measuredAt < $1.value.measuredAt })?.key {
+                    cache[oldest] = nil
+                }
+            }
             return result
         } catch {
-            inProgress[key] = nil
+            if inProgress[key]?.id == requestID {
+                inProgress[key] = nil
+                cache[key] = nil
+            }
             throw error
         }
     }
@@ -138,6 +178,17 @@ actor FolderMeasurementEngine {
             let childIsSymlink = values.isSymbolicLink ?? false
             let childIsPackage = values.isPackage ?? false
             let childName = values.name ?? childURL.lastPathComponent
+            guard values.isDirectory != nil, (!childIsSymlink || values.fileSize != nil),
+                  (childIsDirectory && !childIsSymlink && !childIsPackage) || values.totalFileSize != nil || values.fileSize != nil else {
+                totalUnreadable += 1
+                children.append(FolderChild(
+                    path: childPath, name: childName, size: 0,
+                    isDirectory: childIsDirectory, isPackage: childIsPackage, isSymlink: childIsSymlink,
+                    fileCount: nil, folderCount: nil, childCount: nil,
+                    modified: values.contentModificationDate, fileExtension: extensionValue,
+                    isUnreadable: true))
+                continue
+            }
 
             if childIsSymlink {
                 let size = max(0, Int64(values.fileSize ?? 0))
@@ -152,7 +203,7 @@ actor FolderMeasurementEngine {
             }
 
             if childIsDirectory && !childIsPackage {
-                let result = measureDirectoryRecursively(rootURL: childURL, includeHidden: includeHidden, resourceKeys: keys)
+                let result = try measureDirectoryRecursively(rootURL: childURL, includeHidden: includeHidden, resourceKeys: keys)
                 totalSize += result.totalSize
                 totalFiles += result.totalFileCount
                 totalFolders += result.totalFolderCount + 1
@@ -168,7 +219,8 @@ actor FolderMeasurementEngine {
                     modified: values.contentModificationDate, fileExtension: extensionValue,
                     // WHY: nothing inside was readable, so the 0 bytes above are
                     // an absence of data, not a measurement — the row must say so.
-                    isUnreadable: result.unreadableCount > 0 && result.totalSize == 0))
+                    isUnreadable: result.unreadableCount > 0 && result.totalSize == 0,
+                    isPartial: result.unreadableCount > 0))
             } else {
                 let size = max(0, Int64(values.totalFileSize ?? values.fileSize ?? 0))
                 totalSize += size
@@ -194,7 +246,7 @@ actor FolderMeasurementEngine {
             unreadableFolderCount: totalUnreadable)
     }
 
-    private static func measureDirectoryRecursively(rootURL: URL, includeHidden: Bool, resourceKeys: Set<URLResourceKey>) -> DirectoryAccumulator {
+    private static func measureDirectoryRecursively(rootURL: URL, includeHidden: Bool, resourceKeys: Set<URLResourceKey>) throws -> DirectoryAccumulator {
         var accumulator = DirectoryAccumulator()
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(
@@ -210,7 +262,7 @@ actor FolderMeasurementEngine {
         }
 
         for url in contents {
-            if Task.isCancelled { break }
+            try Task.checkCancellation()
             guard let values = try? url.resourceValues(forKeys: resourceKeys) else {
                 // WHY: this child's metadata is unreadable — skipping it with
                 // `continue` silently dropped its bytes from the total. Count
@@ -221,13 +273,18 @@ actor FolderMeasurementEngine {
             let isDirectory = values.isDirectory ?? false
             let isSymlink = values.isSymbolicLink ?? false
             let isPackage = values.isPackage ?? false
+            guard values.isDirectory != nil, (!isSymlink || values.fileSize != nil),
+                  (isDirectory && !isSymlink && !isPackage) || values.totalFileSize != nil || values.fileSize != nil else {
+                accumulator.unreadableCount += 1
+                continue
+            }
             if isSymlink {
                 accumulator.totalSize += max(0, Int64(values.fileSize ?? 0))
                 accumulator.totalFileCount += 1
                 continue
             }
             if isDirectory && !isPackage {
-                let nested = measureDirectoryRecursively(rootURL: url, includeHidden: includeHidden, resourceKeys: resourceKeys)
+                let nested = try measureDirectoryRecursively(rootURL: url, includeHidden: includeHidden, resourceKeys: resourceKeys)
                 accumulator.totalSize += nested.totalSize
                 accumulator.totalFileCount += nested.totalFileCount
                 accumulator.totalFolderCount += nested.totalFolderCount + 1

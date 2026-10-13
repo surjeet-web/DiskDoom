@@ -1,81 +1,91 @@
 import SwiftUI
+import AppKit
 
-// MARK: - §15 Duplicates View (real content-hash pipeline over scan records)
+// MARK: - Verified duplicates: choose a retained copy, then review the others in Trash queue.
 
 struct DuplicatesView: View {
-    @EnvironmentObject var state: AppState
-    @EnvironmentObject var finder: DuplicateFinder
-    @State private var onlyReclaimable = false
+    @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var finder: DuplicateFinder
+    @State private var search = ""
+    @State private var hideStaged = false
+    @State private var verificationCancelled = false
+
+    private struct FinderInput: Hashable {
+        let scanID: UUID?
+        let recordCount: Int
+        let minimumBytes: Int64
+    }
+
+    private var resultsAreCurrent: Bool {
+        finder.lastRunScanID == state.scanRoot?.id &&
+        finder.lastRunRecordCount == state.records.count &&
+        finder.lastRunMinBytes == state.dupMinBytes
+    }
+
+    private var visibleSets: [DuplicateSet] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (resultsAreCurrent ? finder.sets : []).filter { set in
+            (query.isEmpty || set.files.contains { $0.path.localizedStandardContains(query) }) &&
+            (!hideStaged || set.files.contains { file in
+                file.id != set.keptFile(selectedID: state.duplicateKeeps[set.id])?.id && !isStaged(file.path)
+            })
+        }
+    }
+
+    private var potentialSavings: Int64 {
+        (resultsAreCurrent ? finder.sets : []).reduce(0) { $0 + $1.reclaimable }
+    }
 
     var body: some View {
-        VStack(spacing: DesignTokens.Space.m) {
-            HStack {
-                Text("\(finder.sets.count) duplicate sets · \(finder.sets.reduce(0) { $0 + $1.total }.fileSizeString) total")
-                    .font(.headline)
-                Spacer()
-                Text("Reclaimable: \(finder.sets.reduce(0) { $0 + $1.reclaimable }.fileSizeString) (keep 1 copy)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Picker("Min size", selection: $state.dupMinBytes) {
-                    Text("1 MB").tag(Int64(1_000_000))
-                    Text("10 MB").tag(Int64(10_000_000))
-                    Text("100 MB").tag(Int64(100_000_000))
-                    Text("1 GB").tag(Int64(1_000_000_000))
-                }
-                .pickerStyle(.menu)
-                .frame(width: 150)
-                Toggle("Only show reclaimable", isOn: $onlyReclaimable)
-                Spacer()
-                if finder.isRunning {
-                    ProgressView(value: finder.progress).frame(width: 120)
-                } else {
-                    Button("Re-run") { runFinder() }.buttonStyle(.bordered).controlSize(.small)
-                }
-            }
-            .font(.caption)
+        VStack(spacing: 0) {
+            header
+            Divider()
+            controls
+            Divider()
             if state.records.isEmpty {
-                EmptyState(symbol: "doc.on.doc", title: "Scan first", message: "Duplicate detection hashes your real scan data (size → 8KB sample → full SHA-256).", actionTitle: "Start Scan (⌘R)", action: { state.startScan() })
-            } else if finder.sets.isEmpty && !finder.isRunning {
-                EmptyState(symbol: "checkmark.circle", title: "No Duplicates Found", message: "No byte-identical files above \(ByteFormatting.format(state.dupMinBytes)). Try lowering the minimum size.")
+                EmptyState(symbol: "doc.on.doc", title: "Scan to find duplicates",
+                           message: "Find byte-identical files, choose a copy to keep, and review the rest before cleanup.",
+                           actionTitle: "Start Scan (⌘R)", action: { state.startScan() })
+            } else if finder.isRunning || (!resultsAreCurrent && !verificationCancelled && state.scanPhase == .done) {
+                VStack(spacing: DesignTokens.Space.m) {
+                    ProgressView(value: finder.progress) {
+                        Text("Verifying file contents…")
+                    }
+                    .frame(maxWidth: 340)
+                    Text("Matching sizes, sampling contents, then verifying with SHA-256.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if verificationCancelled && !resultsAreCurrent {
+                EmptyState(symbol: "pause.circle", title: "Verification stopped",
+                           message: "Start again to verify duplicates in this scan.",
+                           actionTitle: "Scan Again", action: { runFinder() })
+            } else if finder.sets.isEmpty {
+                EmptyState(symbol: "checkmark.circle", title: "No duplicates found",
+                           message: "No verified matching files above \(ByteFormatting.format(state.dupMinBytes)). Try a smaller minimum size.")
+            } else if visibleSets.isEmpty {
+                EmptyState(symbol: "line.3.horizontal.decrease.circle", title: "No matching sets",
+                           message: "Try another filename or show sets already staged.",
+                           actionTitle: "Clear filters", action: { search = ""; hideStaged = false })
             } else {
                 ScrollView {
                     LazyVStack(spacing: DesignTokens.Space.m) {
-                        ForEach(finder.sets, id: \.id) { set in
-                            DuplicateSetCard(set: set)
+                        ForEach(visibleSets) { set in
+                            DuplicateSetCard(duplicateSet: set)
                         }
                     }
+                    .padding(DesignTokens.Space.m)
                 }
-                HStack {
-                    Button("Select All Recommended") {
-                        for set in finder.sets where state.duplicateKeeps[set.id] == nil {
-                            state.duplicateKeeps[set.id] = recommendedKeep(for: set)?.id
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    Button("Stage All Selected") {
-                        for set in finder.sets {
-                            let keepID = state.duplicateKeeps[set.id] ?? recommendedKeep(for: set)?.id
-                            for file in set.files where file.id != keepID {
-                                state.stage(source: "Duplicates", path: file.path, bytes: file.bytes)
-                            }
-                        }
-                        state.showCleanup = true
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Spacer()
-                    Text("\(finder.sets.reduce(0) { $0 + $1.reclaimable }.fileSizeString) selected")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
+                Divider()
+                footer
             }
         }
-        .padding(DesignTokens.Space.m)
-        .task(id: [state.dupMinBytes, Int64(state.records.count)]) {
-            // Auto-run only when the scan data or threshold actually changed —
-            // not on every tab visit (hashing is expensive).
-            if !state.records.isEmpty, finder.lastRunMinBytes != state.dupMinBytes || finder.sets.isEmpty {
+        .task(id: FinderInput(scanID: state.scanRoot?.id, recordCount: state.records.count,
+                              minimumBytes: state.dupMinBytes)) {
+            if state.scanPhase == .done, !state.records.isEmpty,
+               (finder.lastRunMinBytes != state.dupMinBytes ||
+                finder.lastRunScanID != state.scanRoot?.id ||
+                finder.lastRunRecordCount != state.records.count) {
                 state.saveSettings()
                 runFinder()
             }
@@ -83,90 +93,211 @@ struct DuplicatesView: View {
         .onDisappear { finder.cancel() }
     }
 
-    private func runFinder() {
-        finder.find(in: state.records, minBytes: state.dupMinBytes)
+    private var header: some View {
+        HStack(spacing: DesignTokens.Space.l) {
+            Image(systemName: "doc.on.doc.fill")
+                .font(.title2)
+                .foregroundStyle(.blue)
+                .frame(width: 44, height: 44)
+                .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Duplicates").font(.title2.weight(.semibold))
+                Text("Verified matches · choose one copy to keep per set")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("\(potentialSavings.fileSizeString) potential")
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                Text("\(finder.sets.count) sets · actual recovered space may vary")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(DesignTokens.Space.m)
     }
 
-    private func recommendedKeep(for set: DuplicateSet) -> DuplicateFile? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        func rank(_ path: String) -> Int {
-            if path.hasPrefix(home + "/Desktop") { return 0 }
-            if path.hasPrefix(home + "/Documents") { return 1 }
-            if path.hasPrefix(home + "/Downloads") { return 2 }
-            return 3
+    private var controls: some View {
+        HStack(spacing: DesignTokens.Space.m) {
+            Picker("Minimum file size", selection: $state.dupMinBytes) {
+                Text("1 MB").tag(Int64(1_000_000))
+                Text("10 MB").tag(Int64(10_000_000))
+                Text("100 MB").tag(Int64(100_000_000))
+                Text("1 GB").tag(Int64(1_000_000_000))
+            }
+            .frame(width: 175)
+            TextField("Search filenames", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+                .accessibilityLabel("Filter duplicate sets by filename")
+            if !search.isEmpty {
+                Button("Clear search", systemImage: "xmark.circle.fill") { search = "" }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+            }
+            Toggle("Hide fully staged", isOn: $hideStaged)
+                .toggleStyle(.checkbox)
+            Spacer()
+            if finder.isRunning {
+                ProgressView(value: finder.progress)
+                    .frame(width: 100)
+                    .accessibilityLabel("Verifying duplicates")
+                Button("Cancel") { finder.cancel(); verificationCancelled = true }
+                    .buttonStyle(.bordered)
+            } else {
+                Button("Scan Again", systemImage: "arrow.clockwise") {
+                    runFinder()
+                }
+                .disabled(state.records.isEmpty)
+                .buttonStyle(.bordered)
+            }
         }
-        return set.files.sorted { rank($0.path) < rank($1.path) }.first
+        .font(.caption)
+        .padding(.horizontal, DesignTokens.Space.m)
+        .padding(.vertical, DesignTokens.Space.s)
+    }
+
+    private var footer: some View {
+        HStack(spacing: DesignTokens.Space.m) {
+            Text("\(visibleSets.count) of \(finder.sets.count) sets shown")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("Review Queue (\(state.cleanupItems.count))") { state.showCleanup = true }
+                .buttonStyle(.bordered)
+            Button("Stage Visible & Review") {
+                for set in visibleSets {
+                    let keepID = set.keptFile(selectedID: state.duplicateKeeps[set.id])?.id
+                    if let kept = set.keptFile(selectedID: state.duplicateKeeps[set.id]), isStaged(kept.path) {
+                        state.banner = AppState.Banner(message: "Remove the kept copy from the cleanup queue before staging its duplicates.", actionTitle: "OK")
+                        continue
+                    }
+                    for file in set.files where file.id != keepID {
+                        state.stage(source: "Duplicates", path: file.path, bytes: file.bytes)
+                    }
+                }
+                state.showCleanup = true
+            }
+            .buttonStyle(.borderedProminent)
+            .help("Stage redundant copies from the visible sets; nothing moves to Trash until you confirm in the queue")
+        }
+        .padding(DesignTokens.Space.m)
+    }
+
+    private func isStaged(_ path: String) -> Bool {
+        let expanded = (path as NSString).expandingTildeInPath
+        return state.cleanupItems.contains { $0.path == expanded }
+    }
+
+    private func runFinder() {
+        verificationCancelled = false
+        finder.find(in: state.records, minBytes: state.dupMinBytes, scanID: state.scanRoot?.id)
     }
 }
 
-// MARK: - Duplicate set card
-
 private struct DuplicateSetCard: View {
-    @EnvironmentObject var state: AppState
-    let set: DuplicateSet
+    @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let duplicateSet: DuplicateSet
     @State private var expanded = true
+
+    private var kept: DuplicateFile? { duplicateSet.keptFile(selectedID: state.duplicateKeeps[duplicateSet.id]) }
+    private var hasStagedCopies: Bool {
+        duplicateSet.files.contains { file in
+            file.id != kept?.id && isStaged(file.path)
+        }
+    }
+    private var keptIsStaged: Bool { kept.map { isStaged($0.path) } ?? false }
+
+    private func isStaged(_ path: String) -> Bool {
+        state.cleanupItems.contains { $0.path == (path as NSString).expandingTildeInPath }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
             Button {
-                expanded.toggle()
+                withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) { expanded.toggle() }
             } label: {
-                HStack {
+                HStack(spacing: DesignTokens.Space.m) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .foregroundStyle(.secondary)
-                    Text(set.hashPrefix)
-                        .font(.callout.monospaced())
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(kept.map { ($0.path as NSString).lastPathComponent } ?? "Duplicate set")
+                            .font(.headline).lineLimit(1)
+                        Text("SHA-256 verified · \(duplicateSet.files.count) identical copies")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Spacer()
-                    Text("\(set.files.count) copies · \(set.perCopy.fileSizeString) each · \(set.total.fileSizeString)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Reclaimable: \(set.reclaimable.fileSizeString)")
-                        .font(.caption.weight(.semibold))
+                    Text("\(duplicateSet.reclaimable.fileSizeString) potential")
+                        .font(.callout.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.green)
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("\(duplicateSet.files.count) identical copies, \(duplicateSet.reclaimable.fileSizeString) potential savings")
+            .accessibilityHint(expanded ? "Collapse set" : "Expand set")
+            .help(duplicateSet.hashPrefix)
+
             if expanded {
-                ForEach(set.files, id: \.id) { file in
-                    let keptID = state.duplicateKeeps[set.id] ?? set.files.first?.id
-                    let isKept = keptID == file.id
-                    HStack {
-                        Image(systemName: isKept ? "circle.inset.filled" : "circle")
-                            .foregroundStyle(isKept ? Color.green : .secondary)
-                        Text(file.path)
-                            .font(.callout.monospaced())
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Text(file.bytes.fileSizeString)
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        if isKept {
-                            Text("KEEP").font(.caption2.weight(.bold)).foregroundStyle(.green)
+                ForEach(duplicateSet.files) { file in
+                    HStack(spacing: DesignTokens.Space.s) {
+                        Button {
+                            state.duplicateKeeps[duplicateSet.id] = file.id
+                        } label: {
+                            Image(systemName: kept?.id == file.id ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(kept?.id == file.id ? .green : .secondary)
+                                .frame(width: 28, height: 28)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Keep \(file.path)")
+                        .accessibilityAddTraits(kept?.id == file.id ? [.isSelected] : [])
+                        .disabled(hasStagedCopies && kept?.id != file.id)
+                        .help(hasStagedCopies ? "Remove this set's files from the queue before changing which copy to keep" : "Keep this copy")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text((file.path as NSString).lastPathComponent)
+                                .font(.callout.weight(.medium)).lineLimit(1)
+                            Text(file.path)
+                                .font(.caption.monospaced()).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                                .help(file.path)
+                        }
+                        Spacer(minLength: DesignTokens.Space.s)
+                        if kept?.id == file.id {
+                            Text(state.duplicateKeeps[duplicateSet.id] == nil ? "SUGGESTED KEEP" : "KEEP")
+                                .font(.caption2.weight(.bold)).foregroundStyle(.green)
+                        }
+                        Button("Reveal", systemImage: "folder") {
+                            NSWorkspace.shared.selectFile((file.path as NSString).expandingTildeInPath, inFileViewerRootedAtPath: "")
+                        }
+                        .labelStyle(.iconOnly)
+                        .help("Reveal in Finder")
+                        .buttonStyle(.borderless)
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        state.duplicateKeeps[set.id] = file.id
-                    }
-                    .help(isKept ? "Kept copy" : "Click to keep this copy instead")
+                    .padding(.vertical, DesignTokens.Space.xs)
+                    .padding(.horizontal, DesignTokens.Space.s)
+                    .background(kept?.id == file.id ? Color.green.opacity(0.08) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
                 }
                 HStack {
+                    Text(keptIsStaged ? "Your kept copy is in the queue. Remove it before staging other copies."
+                         : hasStagedCopies ? "Copies staged. Remove them from the queue before changing the kept copy."
+                         : "One copy stays. Other copies go to your review queue, not directly to Trash.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Stage \(set.files.count - 1) copies for cleanup") {
-                        let keepID = state.duplicateKeeps[set.id] ?? set.files.first?.id
-                        for file in set.files where file.id != keepID {
+                    Button("Stage Other Copies") {
+                        for file in duplicateSet.files where file.id != kept?.id {
                             state.stage(source: "Duplicates", path: file.path, bytes: file.bytes)
                         }
+                        state.showCleanup = true
                     }
                     .buttonStyle(.bordered)
-                    .font(.caption)
+                    .controlSize(.small)
+                    .disabled(keptIsStaged)
                 }
             }
         }
         .padding(DesignTokens.Space.m)
-        .background(Color.secondary.opacity(0.06))
-        .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
     }
 }
 
@@ -174,5 +305,5 @@ private struct DuplicateSetCard: View {
     DuplicatesView()
         .environmentObject(AppState())
         .environmentObject(DuplicateFinder())
-        .frame(width: 800, height: 600)
+        .frame(width: 900, height: 650)
 }

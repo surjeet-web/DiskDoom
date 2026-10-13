@@ -103,16 +103,21 @@ struct DiskDoomApp: App {
                                 scanDate: state.lastScanDate)
                             // Forecast: category breakdown from the fresh records.
                             var breakdown: [String: Int64] = [:]
-                            for record in state.records where !record.isDirectory {
-                                breakdown[record.category.rawValue, default: 0] += record.bytes
+                            // A partial folder/index or old hydrated scan is not
+                            // a current, whole-volume category measurement.
+                            if let root = state.scanRoot, root.path == "/", !root.isPartial,
+                               state.skippedPaths.isEmpty, state.records.count >= root.fileCount,
+                               let date = state.lastScanDate,
+                               (0...60).contains(Date().timeIntervalSince(date)) {
+                                for record in state.records where !record.isDirectory {
+                                    let previous = breakdown[record.category.rawValue, default: 0]
+                                    let sum = previous.addingReportingOverflow(max(0, record.bytes))
+                                    breakdown[record.category.rawValue] = sum.overflow ? Int64.max : sum.partialValue
+                                }
                             }
-                            if let v = try? URL(fileURLWithPath: "/").resourceValues(
-                                forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
-                               let total = v.volumeTotalCapacity {
-                                let free = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
-                                let capacity = Int64(total)
+                            if let capacity = StorageCapacityReader.read().availableValue {
                                 forecastEngine.recordSnapshot(
-                                    totalCapacity: capacity, usedSize: capacity - free, freeSize: free,
+                                    totalCapacity: capacity.totalBytes, usedSize: capacity.usedBytes, freeSize: capacity.freeBytes,
                                     categoryBreakdown: breakdown, source: .scan)
                                 Task { await forecastEngine.compute() }
                             }

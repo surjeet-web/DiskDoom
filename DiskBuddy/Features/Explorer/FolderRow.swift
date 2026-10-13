@@ -35,8 +35,8 @@ struct FolderRow: View {
                         Text("Symbolic link")
                             .font(.caption2)
                             .foregroundStyle(.orange)
-                    } else if let modified = node.modified {
-                        Text(modified.formatted(date: .abbreviated, time: .omitted))
+                    } else {
+                        Text(node.modifiedDisplay)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -46,8 +46,8 @@ struct FolderRow: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                if node.isDirectory, let count = node.childCount {
-                    Text("\(count) items")
+                if node.isDirectory {
+                    Text("\(node.childCountDisplay) items")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 5)
@@ -61,11 +61,11 @@ struct FolderRow: View {
                             .fill(Color.secondary.opacity(0.08))
                         RoundedRectangle(cornerRadius: 3)
                             .fill(barColor)
-                            .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(node.percentageOfParent / 100))))
+                            .frame(width: node.isUnreadable || node.parentIsPartial ? 0 : max(0, min(geo.size.width, geo.size.width * CGFloat(node.percentageOfParent / 100))))
                     }
                 }
                 .frame(width: 130, height: 9)
-                Text(node.isUnreadable ? "—" : String(format: "%.1f%%", node.percentageOfParent))
+                Text(node.isUnreadable || node.parentIsPartial ? "—" : node.shareDisplay)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 48, alignment: .trailing)
@@ -78,7 +78,7 @@ struct FolderRow: View {
                         .frame(width: 82, alignment: .trailing)
                         .help("Permission denied — size not measured")
                 } else {
-                    Text(node.sizeFormatted)
+                    Text(node.sizeDisplay)
                         .font(.callout.weight(.medium).monospacedDigit())
                         .frame(width: 82, alignment: .trailing)
                 }
@@ -99,7 +99,7 @@ struct FolderRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help(node.path)
+        .help("\(node.path)\n\(node.provenanceDisplay)\n\(node.shareDisplay)")
     }
 
     private var iconView: some View {

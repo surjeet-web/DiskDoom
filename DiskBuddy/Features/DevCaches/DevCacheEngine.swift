@@ -178,9 +178,13 @@ final class DevCacheEngine: ObservableObject, @unchecked Sendable {
                 return
             }
             await MainActor.run {
+                defer { self.stateLock.withLock { self.walkInFlight = false } }
+                guard !token.isCancelled else {
+                    self.isScanning = false
+                    return
+                }
                 self.items = found.sorted { $0.bytes > $1.bytes }
                 self.isScanning = false
-                self.stateLock.withLock { self.walkInFlight = false }
             }
         }
     }

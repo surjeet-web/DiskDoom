@@ -119,7 +119,7 @@ struct UninstallSheet: View {
                 .background(.orange.opacity(0.08))
                 .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
             }
-            Text("Total to free: \(stagedTotal.fileSizeString)")
+            Text("Estimated total to move to Trash: \(stagedTotal.fileSizeString)")
                 .font(.title3.weight(.semibold).monospacedDigit())
                 .foregroundStyle(Color.accentColor)
             HStack {

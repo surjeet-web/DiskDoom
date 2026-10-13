@@ -5,14 +5,16 @@ import AppKit
 // MARK: - Real system notifications (scan done, cleanup done, monitor alerts,
 // menu-bar space alerts + weekly digest)
 
-final class NotificationService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
+// No mutable stored state. Notification-center APIs support concurrent calls;
+// AppKit activation in the delegate is explicitly dispatched to the main queue.
+final class NotificationService: NSObject, ObservableObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     static let categoryScan = "SCAN_DONE"
     static let categoryCleanup = "CLEANUP_DONE"
     static let categoryMonitor = "MONITOR_ALERT"
     static let categorySpaceAlert = "SPACE_ALERT"
     static let weeklyDigestID = "diskdoom-weekly-digest"
 
-    override init() {
+    private override init() {
         super.init()
         // Space alerts carry [Open DiskDoom] [Later] actions.
         let openAction = UNNotificationAction(
@@ -74,7 +76,7 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
 
     func postCleanupComplete(items: Int, freed: Int64) {
         post(title: "Cleanup complete",
-             body: "Moved \(items) items to Trash · \(ByteFormatting.format(freed)) freed",
+              body: "Moved \(items) items (\(ByteFormatting.format(freed))) to Trash. Empty Trash to reclaim space.",
              category: Self.categoryCleanup)
     }
 

@@ -52,17 +52,20 @@ struct AgeMapView: View {
                         }
                     }
                 }
-                if let oldest = buckets.last(where: { $0.bytes > 0 }) {
+                if let oldest = buckets.dropLast().last(where: { $0.bytes > 0 }) {
                     HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
+                        Image(systemName: "clock")
                             .foregroundStyle(.orange)
-                        Text("\(oldest.bytes.fileSizeString) hasn't been touched in \(oldest.label.lowercased()) — consider cleaning.")
+                        Text("\(oldest.bytes.fileSizeString) of indexed files have dates in \(oldest.label.lowercased()). Age alone does not mean a file is safe to remove.")
                             .font(.caption)
                     }
                     .padding(DesignTokens.Space.s)
                     .background(.orange.opacity(0.1))
                     .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
                 }
+                Text("Based on indexed files. Unreadable or future dates appear under Unknown date; collapsed folders may contain more files.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(DesignTokens.Space.m)

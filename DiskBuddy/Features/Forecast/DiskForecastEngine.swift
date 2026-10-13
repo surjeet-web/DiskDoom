@@ -18,6 +18,30 @@ struct UsageSnapshot: Codable, Identifiable {
     let freeSize: Int64
     let categoryBreakdown: [String: Int64]
     let source: Source
+    /// Measurement provenance, distinct from the scan/launch recording event.
+    /// Missing in legacy JSON: retained, but never verified as risk evidence.
+    let measurementSource: String?
+
+    init(id: UUID, timestamp: Date, totalCapacity: Int64, usedSize: Int64, freeSize: Int64,
+         categoryBreakdown: [String: Int64], source: Source, measurementSource: String? = nil) {
+        self.id = id
+        self.timestamp = timestamp
+        self.totalCapacity = totalCapacity
+        self.usedSize = usedSize
+        self.freeSize = freeSize
+        self.categoryBreakdown = categoryBreakdown
+        self.source = source
+        self.measurementSource = measurementSource
+    }
+
+    var hasVerifiedCapacitySource: Bool {
+        measurementSource == StorageCapacityReader.source
+    }
+
+    var isValidCapacity: Bool {
+        guard let capacity = StorageCapacity(totalBytes: totalCapacity, freeBytes: freeSize) else { return false }
+        return usedSize == capacity.usedBytes && categoryBreakdown.values.allSatisfy { $0 >= 0 }
+    }
 
     var usedPercent: Double {
         guard totalCapacity > 0 else { return 0 }
@@ -72,6 +96,34 @@ struct CategoryGrowth: Identifiable {
 }
 
 struct DiskForecast {
+    enum RiskEvidence: Equatable {
+        case insufficient, stale, noRiskDetected, growingHorizonUnknown, estimatedFull(days: Int), lowFreeSpace
+
+        var label: String {
+            switch self {
+            case .insufficient: return "Insufficient risk evidence"
+            case .stale: return "Stale risk evidence"
+            case .noRiskDetected: return "No fill risk detected in this trend"
+            case .growingHorizonUnknown: return "Growing — fill horizon unknown"
+            case .estimatedFull(let days): return days == 1 ? "Estimated full in 1 day or less" : "Estimated full in ~\(days) days"
+            case .lowFreeSpace: return "Low free space already measured"
+            }
+        }
+    }
+
+    static let freshnessTTL: TimeInterval = 86_400
+    func riskEvidence(now: Date = Date()) -> RiskEvidence {
+        guard let latest = history.last, latest.hasVerifiedCapacitySource, latest.isValidCapacity,
+              latest.timestamp <= now else { return .insufficient }
+        let age = now.timeIntervalSince(latest.timestamp)
+        guard age >= 0, age <= Self.freshnessTTL else { return .stale }
+        if hasReliableProjection, let days = daysUntilFull { return .estimatedFull(days: days) }
+        if Double(currentFree) <= Double(totalCapacity) * 0.10 { return .lowFreeSpace }
+        guard hasReliableProjection else { return .insufficient }
+        // A small positive slope may be labelled stable, but is not evidence of no fill risk.
+        return dailyChangeBytes > 0 ? .growingHorizonUnknown : .noRiskDetected
+    }
+
     let computedAt: Date
     let currentUsed: Int64
     let currentFree: Int64
@@ -178,6 +230,17 @@ final class DiskForecastEngine: ObservableObject {
     @Published private(set) var statusText = ""
     @Published private(set) var history: [UsageSnapshot] = []
     @Published private(set) var alerts: [ForecastAlert] = []
+    @Published private(set) var historyReadError: String?
+
+    var forecastMeasurement: Measurement<DiskForecast> {
+        if let historyReadError { return .error(reason: historyReadError) }
+        guard let forecast, let latest = forecast.history.last else {
+            return history.isEmpty ? .notMeasured : .unavailable(reason: "Insufficient verified, compatible volume measurements. Legacy, unknown-source and future-dated history is retained but excluded from risk evidence.")
+        }
+        return Measurement.available(value: forecast, measuredAt: latest.timestamp,
+                                     source: "\(latest.measurementSource ?? "Unverified capacity source"); linear trend estimate")
+            .applyingFreshness(maxAge: DiskForecast.freshnessTTL)
+    }
 
     /// Test hook: redirect history storage (atomic box so statics stay
     /// concurrency-safe under StrictConcurrency).
@@ -201,7 +264,8 @@ final class DiskForecastEngine: ObservableObject {
     }
 
     init() {
-        history = Self.loadHistory()
+        do { history = try Self.loadHistory() }
+        catch { historyReadError = "Usage history could not be read: \(error.localizedDescription)" }
     }
 
     // MARK: - Record
@@ -211,13 +275,15 @@ final class DiskForecastEngine: ObservableObject {
         usedSize: Int64,
         freeSize: Int64,
         categoryBreakdown: [String: Int64] = [:],
-        source: UsageSnapshot.Source
+        source: UsageSnapshot.Source,
+        measurementSource: String = StorageCapacityReader.source
     ) {
-        guard totalCapacity > 0 else { return }
+        guard let capacity = StorageCapacity(totalBytes: totalCapacity, freeBytes: freeSize),
+              usedSize == capacity.usedBytes, categoryBreakdown.values.allSatisfy({ $0 >= 0 }) else { return }
         let snapshot = UsageSnapshot(
             id: UUID(), timestamp: Date(),
             totalCapacity: totalCapacity, usedSize: usedSize, freeSize: freeSize,
-            categoryBreakdown: categoryBreakdown, source: source)
+            categoryBreakdown: categoryBreakdown, source: source, measurementSource: measurementSource)
 
         // Replace entries within the same hour (launch + scan back-to-back).
         //
@@ -226,7 +292,9 @@ final class DiskForecastEngine: ObservableObject {
         // WITH a category breakdown, then the launch job records a `.launch`
         // snapshot WITHOUT one — destroying the breakdown, after which every
         // category appeared to grow by its entire size.
-        if let last = history.last, Date().timeIntervalSince(last.timestamp) < 3_600 {
+        if let last = history.last, last.hasVerifiedCapacitySource, snapshot.hasVerifiedCapacitySource,
+           last.measurementSource == snapshot.measurementSource, last.totalCapacity == snapshot.totalCapacity,
+           Date().timeIntervalSince(last.timestamp) >= 0, Date().timeIntervalSince(last.timestamp) < 3_600 {
             let isRicher = !snapshot.categoryBreakdown.isEmpty
                 && snapshot.categoryBreakdown.count >= last.categoryBreakdown.count
             if isRicher || last.categoryBreakdown.isEmpty {
@@ -237,7 +305,9 @@ final class DiskForecastEngine: ObservableObject {
         }
         // Prune beyond a year.
         let cutoff = Date().addingTimeInterval(-Double(maxHistoryDays) * 86_400)
-        history = history.filter { $0.timestamp > cutoff }
+        // Legacy/unknown-source rows are retained unchanged rather than being
+        // upgraded, overwritten by hourly coalescing, or deleted by migration.
+        history = history.filter { $0.timestamp > cutoff || !$0.hasVerifiedCapacitySource }
         scheduleSave()
     }
 
@@ -245,25 +315,28 @@ final class DiskForecastEngine: ObservableObject {
 
     func compute() async {
         isComputing = true
-        guard history.count >= 2 else {
+        let now = Date()
+        let validHistory = Self.verifiedHistory(from: history, now: now)
+        guard validHistory.count >= 2 else {
             forecast = nil
             isComputing = false
-            statusText = "Need at least 2 usage snapshots over different hours — currently \(history.count)"
+            statusText = "Insufficient verified risk evidence — \(validHistory.count) compatible measurements; \(history.count - validHistory.count) retained records excluded"
             alerts = [ForecastAlert(
-                title: "Not enough data",
-                detail: "DiskDoom records usage at every launch and scan. Come back after a few days for trend analysis.",
+                title: "Insufficient verified risk evidence",
+                detail: "Legacy, unknown-source and future-dated records are unverified and excluded. Need comparable volume-capacity measurements spanning different hours; projections require three measurements over seven days.",
                 severity: .info, actionTab: nil)]
             return
         }
 
-        let input = history
-        let result = await Task.detached { Self.computeForecast(from: input) }.value
+        let input = validHistory
+        let result = await Task.detached { Self.computeForecast(from: input, now: now) }.value
+        guard !Task.isCancelled else { isComputing = false; return }
 
         var computedAlerts: [ForecastAlert] = []
         if let days = result.daysUntilFull, days <= 7 {
             computedAlerts.append(ForecastAlert(
-                title: "Disk full in \(days) days",
-                detail: "At the current rate (\(result.dailyChangeFormatted)) you'll run out of space on \(result.criticalDate?.formatted(date: .abbreviated, time: .omitted) ?? "soon"). Clean up now.",
+                title: days == 1 ? "Disk may fill in 1 day or less" : "Disk full in ~\(days) days",
+                detail: "Trend estimate: \(result.riskEvidence().label). The 10%-free threshold date is not the full-disk date. Clean up now.",
                 severity: .critical, actionTab: .simulator))
         } else if let days = result.daysUntilFull, days <= 30 {
             computedAlerts.append(ForecastAlert(
@@ -279,8 +352,8 @@ final class DiskForecastEngine: ObservableObject {
                 severity: .warning, actionTab: .simulator))
         }
         // Sudden spike: > 5 GB added between recent snapshots.
-        if history.count >= 3 {
-            let recent = Array(history.suffix(3))
+        if result.history.count >= 3 {
+            let recent = Array(result.history.suffix(3))
             let changes = zip(recent, recent.dropFirst()).map { $1.usedSize - $0.usedSize }
             if let spike = changes.max(), spike > 5_000_000_000 {
                 computedAlerts.append(ForecastAlert(
@@ -299,12 +372,14 @@ final class DiskForecastEngine: ObservableObject {
     /// Test hook: replace history with seeded fixtures.
     func seedHistory(_ snapshots: [UsageSnapshot]) {
         history = snapshots
+        historyReadError = nil
     }
 
     func clearHistory() {
         history = []
         forecast = nil
         alerts = []
+        historyReadError = nil
         try? FileManager.default.removeItem(at: Self.historyFile)
     }
 
@@ -315,9 +390,16 @@ final class DiskForecastEngine: ObservableObject {
     /// extrapolating from it produced "0 days until full".
     nonisolated static let minimumDaySpanForProjection: Double = 7
 
-    nonisolated private static func computeForecast(from raw: [UsageSnapshot]) -> DiskForecast {
-        let now = Date()
-        let sorted = raw.sorted { $0.timestamp < $1.timestamp }
+    nonisolated static func verifiedHistory(from raw: [UsageSnapshot], now: Date = Date()) -> [UsageSnapshot] {
+        let valid = raw.filter {
+            $0.hasVerifiedCapacitySource && $0.isValidCapacity && $0.timestamp <= now
+        }.sorted { $0.timestamp < $1.timestamp }
+        // Different volumes/capacity regimes cannot establish one comparable growth trend.
+        return valid.filter { $0.totalCapacity == valid.last?.totalCapacity }
+    }
+
+    nonisolated static func computeForecast(from raw: [UsageSnapshot], now: Date = Date()) -> DiskForecast {
+        let sorted = verifiedHistory(from: raw, now: now)
         // Never force-unwrap: `seedHistory` and paging can both leave this empty.
         guard let latest = sorted.last, let oldest = sorted.first else {
             return DiskForecast(
@@ -336,7 +418,8 @@ final class DiskForecastEngine: ObservableObject {
         let rawDaily = safeSlope * 86_400
         let dailyChange = rawDaily.isFinite && abs(rawDaily) < Double(Int64.max)
             ? Int64(rawDaily) : 0
-        let weeklyChange = dailyChange * 7
+        let (weeklyProduct, weeklyOverflow) = dailyChange.multipliedReportingOverflow(by: 7)
+        let weeklyChange = weeklyOverflow ? (dailyChange > 0 ? Int64.max : -Int64.max) : weeklyProduct
 
         let trend: DiskForecast.TrendDirection
         if abs(dailyChange) < 10_000_000 { // < 10 MB/day = stable
@@ -352,8 +435,10 @@ final class DiskForecastEngine: ObservableObject {
         // produced a slope of ~288 GB/day and the header rendered
         // "0 days until full" in 56pt red plus a "Disk full in 0 days" alert.
         // A fill date is only meaningful over a real span of days.
-        let daySpan = now.timeIntervalSince(oldest.timestamp) / 86_400
+        let daySpan = latest.timestamp.timeIntervalSince(oldest.timestamp) / 86_400
+        let age = now.timeIntervalSince(latest.timestamp)
         let hasReliableTrend = sorted.count >= 3 && daySpan >= Self.minimumDaySpanForProjection
+            && age >= 0 && age <= DiskForecast.freshnessTTL
 
         // Days until full (only when growing, and only with a reliable trend).
         var daysUntilFull: Int?
@@ -361,7 +446,7 @@ final class DiskForecastEngine: ObservableObject {
             let days = Double(latest.freeSize) / Double(dailyChange)
             // Floor at 1: rounding a sub-day value produced the alarming and
             // meaningless "Disk full in 0 days".
-            if days >= 1, days < 3_650 { daysUntilFull = Int(days.rounded()) }
+            if days >= 0, days < 3_650 { daysUntilFull = max(1, Int(days.rounded())) }
         }
 
         // Threshold crossing dates (10% / 20% free).
@@ -373,10 +458,10 @@ final class DiskForecastEngine: ObservableObject {
             let daysCritical = Double(max(0, latest.freeSize - criticalThreshold)) / Double(dailyChange)
             let daysWarning = Double(max(0, latest.freeSize - warningThreshold)) / Double(dailyChange)
             if daysCritical > 0, daysCritical < 3_650 {
-                criticalDate = now.addingTimeInterval(daysCritical * 86_400)
+                criticalDate = latest.timestamp.addingTimeInterval(daysCritical * 86_400)
             }
             if daysWarning > 0, daysWarning < 3_650 {
-                warningDate = now.addingTimeInterval(daysWarning * 86_400)
+                warningDate = latest.timestamp.addingTimeInterval(daysWarning * 86_400)
             }
         }
 
@@ -410,27 +495,18 @@ final class DiskForecastEngine: ObservableObject {
 
         // Category growth (oldest vs latest breakdowns).
         var categoryGrowth: [CategoryGrowth] = []
-        if !latest.categoryBreakdown.isEmpty || !oldest.categoryBreakdown.isEmpty {
+        // Only explicit breakdown values are evidence. A launch may carry a
+        // measured breakdown supplied by its caller; an absent key is never zero.
+        let measuredBreakdowns = sorted.filter { !$0.categoryBreakdown.isEmpty }
+        if let latest = measuredBreakdowns.last, let oldest = measuredBreakdowns.first,
+           latest.timestamp.timeIntervalSince(oldest.timestamp) >= Self.minimumDaySpanForProjection * 86_400 {
             // Compare breakdowns only across a real span; otherwise every
             // category shows its entire size as "growth".
             let span = latest.timestamp.timeIntervalSince(oldest.timestamp)
-            guard span >= Self.minimumDaySpanForProjection * 86_400 else {
-                return DiskForecast(
-                    computedAt: now, currentUsed: latest.usedSize,
-                    currentFree: latest.freeSize, totalCapacity: latest.totalCapacity,
-                    dailyChangeBytes: dailyChange, weeklyChangeBytes: weeklyChange,
-                    trendDirection: trend,
-                    daysUntilFull: nil, criticalDate: nil, warningDate: nil,
-                    projectedUsage30Days: latest.usedSize,
-                    projectedUsage90Days: latest.usedSize,
-                    hasReliableProjection: false,
-                    history: sorted, points: points, categoryGrowth: [],
-                    confidenceLevel: .insufficient, dataPointCount: sorted.count)
-            }
             let days = span / 86_400
-            for category in Set(latest.categoryBreakdown.keys).union(oldest.categoryBreakdown.keys) {
-                let current = latest.categoryBreakdown[category] ?? 0
-                let previous = oldest.categoryBreakdown[category] ?? 0
+            for category in Set(latest.categoryBreakdown.keys).intersection(oldest.categoryBreakdown.keys) {
+                guard let current = latest.categoryBreakdown[category],
+                      let previous = oldest.categoryBreakdown[category] else { continue }
                 categoryGrowth.append(CategoryGrowth(
                     category: category,
                     currentSize: current,
@@ -474,7 +550,8 @@ final class DiskForecastEngine: ObservableObject {
     nonisolated private static func regression(_ snapshots: [UsageSnapshot]) -> (slope: Double, intercept: Double) {
         let n = Double(snapshots.count)
         guard n >= 2 else { return (0, 0) }
-        let xs = snapshots.map { $0.timestamp.timeIntervalSince1970 }
+        let origin = snapshots.first?.timestamp.timeIntervalSince1970 ?? 0
+        let xs = snapshots.map { $0.timestamp.timeIntervalSince1970 - origin }
         let ys = snapshots.map { Double($0.usedSize) }
         let sumX = xs.reduce(0, +)
         let sumY = ys.reduce(0, +)
@@ -483,16 +560,17 @@ final class DiskForecastEngine: ObservableObject {
         let denominator = n * sumX2 - sumX * sumX
         guard abs(denominator) > 1e-10 else { return (0, sumY / n) }
         let slope = (n * sumXY - sumX * sumY) / denominator
-        return (slope, (sumY - slope * sumX) / n)
+        return (slope, (sumY - slope * sumX) / n - slope * origin)
     }
 
     nonisolated private static func statusText(for forecast: DiskForecast) -> String {
+        guard forecast.hasReliableProjection else { return forecast.riskEvidence().label }
         switch forecast.trendDirection {
         case .growing:
             if let days = forecast.daysUntilFull {
                 return "Growing \(forecast.dailyChangeFormatted) — full in ~\(days) days"
             }
-            return "Growing \(forecast.dailyChangeFormatted)"
+            return "Growing \(forecast.dailyChangeFormatted) — fill horizon unknown"
         case .stable:
             return "Stable — no significant change"
         case .shrinking:
@@ -517,10 +595,11 @@ final class DiskForecastEngine: ObservableObject {
         }
     }
 
-    nonisolated private static func loadHistory() -> [UsageSnapshot] {
-        guard let data = try? Data(contentsOf: historyFile) else { return [] }
+    nonisolated private static func loadHistory() throws -> [UsageSnapshot] {
+        guard FileManager.default.fileExists(atPath: historyFile.path) else { return [] }
+        let data = try Data(contentsOf: historyFile)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([UsageSnapshot].self, from: data)) ?? []
+        return try decoder.decode([UsageSnapshot].self, from: data)
     }
 }

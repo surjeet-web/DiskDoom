@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-// MARK: - T8 SQLite scan index (actor-isolated, transactional, batched)
+// MARK: - T8 SQLite scan index (actor-isolated, transactional, batched reads)
 //
 // Persistence map (existing layers untouched):
 //   UserDefaults → settings/preferences
@@ -15,7 +15,7 @@ import SQLite3
 //   scan_files(scan_id) ✓, file_hashes + metadata ✓
 // - latest scan retrievable without touching the filesystem ✓
 // - files load in LIMIT/OFFSET batches, never one giant blob ✓
-// - writes inside transactions (chunked commits) ✓
+// - writes inside one atomic transaction per scan ✓
 // - actor isolation; ScanEngine never imports SQLite ✓ (it doesn't)
 // - failed writes never break scans (callers use try?) ✓
 // - delete/rebuild safe (deleteAllScans + deleteDatabaseFile) ✓
@@ -137,13 +137,15 @@ actor ScanDatabase {
         }
     }
 
-    // MARK: Writes (transactional, chunked)
+    // MARK: Writes (transactional, cancellable)
 
     func saveScan(root: ScanNode, records: [ScannedRecord], label: String, elapsed: Double) throws {
+        try Task.checkCancellation()
         try open()
         let id = UUID().uuidString
         let treeData = try JSONEncoder().encode(root)
         let treeJSON = String(data: treeData, encoding: .utf8) ?? "{}"
+        try Task.checkCancellation()
         try exec("BEGIN IMMEDIATE")
         do {
             try run(
@@ -164,26 +166,26 @@ actor ScanDatabase {
                 throw ScanDatabaseError.prepareFailed(lastError())
             }
             defer { sqlite3_finalize(stmt) }
-            var sinceCommit = 0
-            for record in records {
-                sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, SQLITE_TRANSIENT_VALUE)
-                sqlite3_bind_text(stmt, 2, (record.path as NSString).utf8String, -1, SQLITE_TRANSIENT_VALUE)
+            // The scan ID never changes. Reset retains bindings, so bind it
+            // once instead of allocating/copying it for every record.
+            bindText(stmt, 1, id)
+            for (index, record) in records.enumerated() {
+                if index % 256 == 0 { try Task.checkCancellation() }
+                bindText(stmt, 2, record.path)
                 sqlite3_bind_int64(stmt, 3, record.bytes)
                 sqlite3_bind_int64(stmt, 4, record.physical)
                 sqlite3_bind_double(stmt, 5, record.modified.timeIntervalSince1970)
                 sqlite3_bind_int(stmt, 6, record.isDirectory ? 1 : 0)
-                sqlite3_bind_text(stmt, 7, (record.category.rawValue as NSString).utf8String, -1, SQLITE_TRANSIENT_VALUE)
+                bindText(stmt, 7, record.category.rawValue)
                 guard sqlite3_step(stmt) == SQLITE_DONE else {
                     throw ScanDatabaseError.execFailed(lastError())
                 }
                 sqlite3_reset(stmt)
-                sinceCommit += 1
-                if sinceCommit >= 5000 {
-                    try exec("COMMIT")
-                    try exec("BEGIN IMMEDIATE")
-                    sinceCommit = 0
-                }
             }
+            // Avoid repeated durable commits every 5,000 rows. More
+            // importantly, cancellation/failure rolls back the whole scan,
+            // rather than leaving a cached tree with an incomplete index.
+            try Task.checkCancellation()
             try run("INSERT OR REPLACE INTO metadata(key, value) VALUES('last_scan_id', ?)", bind: { self.bindText($0, 1, id) })
             try exec("COMMIT")
         } catch {
@@ -271,6 +273,8 @@ actor ScanDatabase {
     }
 
     func loadFiles(scanID: String, limit: Int, offset: Int) throws -> [ScannedRecord] {
+        try Task.checkCancellation()
+        guard limit > 0, offset >= 0 else { return [] }
         try open()
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT path, bytes, physical, modified, is_dir, category FROM scan_files WHERE scan_id = ? ORDER BY rowid LIMIT ? OFFSET ?", -1, &stmt, nil) == SQLITE_OK, let stmt else {
@@ -278,10 +282,13 @@ actor ScanDatabase {
         }
         defer { sqlite3_finalize(stmt) }
         bindText(stmt, 1, scanID)
-        sqlite3_bind_int(stmt, 2, Int32(limit))
-        sqlite3_bind_int(stmt, 3, Int32(offset))
+        sqlite3_bind_int64(stmt, 2, Int64(limit))
+        sqlite3_bind_int64(stmt, 3, Int64(offset))
         var records: [ScannedRecord] = []
+        var rowsRead = 0
         while sqlite3_step(stmt) == SQLITE_ROW {
+            if rowsRead % 256 == 0 { try Task.checkCancellation() }
+            rowsRead += 1
             guard let category = NodeCategory(rawValue: columnText(stmt, 5)) else { continue }
             records.append(ScannedRecord(
                 path: columnText(stmt, 0),
@@ -415,7 +422,9 @@ actor ScanDatabase {
     }
 
     private func bindText(_ stmt: OpaquePointer, _ index: Int32, _ value: String) {
-        sqlite3_bind_text(stmt, index, (value as NSString).utf8String, -1, SQLITE_TRANSIENT_VALUE)
+        // SQLite copies before withCString returns; no autoreleased NSString
+        // bridge is kept alive across a large insertion loop.
+        _ = value.withCString { sqlite3_bind_text(stmt, index, $0, -1, SQLITE_TRANSIENT_VALUE) }
     }
 
     private func bindInt(_ stmt: OpaquePointer, _ index: Int32, _ value: Int64) {

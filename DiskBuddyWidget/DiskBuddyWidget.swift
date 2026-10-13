@@ -12,6 +12,9 @@ import SwiftUI
 // MARK: - Shared snapshot contract (mirrors app-side WidgetDataBridge.Snapshot)
 
 struct WidgetSnapshot: Codable {
+    var schemaVersion: Int?
+    var capacity: Measurement<StorageCapacity>?
+    var scanSource: String?
     var freeBytes: Int64 = 0
     var totalBytes: Int64 = 0
     var healthGrade: String?
@@ -54,36 +57,72 @@ enum SharedWidgetStore {
     }
 
     /// Live volume capacity — readable from the sandboxed widget.
-    static func liveCapacity() -> (free: Int64, total: Int64) {
-        let url = URL(fileURLWithPath: "/")
-        if let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
-           let total = values.volumeTotalCapacity {
-            let free = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
-            return (free, Int64(total))
-        }
-        return (0, 0)
+    static func liveCapacity(now: Date = Date()) -> Measurement<StorageCapacity> {
+        StorageCapacityReader.read(measuredAt: now)
     }
 }
+
+// MARK: - Pure widget measurement policy
+enum WidgetMeasurementPolicy {
+    static let capacityTTL: TimeInterval = 300
+    static let scanTTL: TimeInterval = 86_400
+
+    static func capacity(live: Measurement<StorageCapacity>, cached: Measurement<StorageCapacity>?, now: Date) -> Measurement<StorageCapacity> {
+        let current = live.applyingFreshness(maxAge: capacityTTL, now: now)
+        if current.availableValue != nil { return current }
+        guard let cached else { return current }
+        guard let value = cached.recordedValue, let date = cached.measuredAt,
+              let source = cached.source, !source.isEmpty,
+              StorageCapacity(totalBytes: value.totalBytes, freeBytes: value.freeBytes) != nil else {
+            return .unavailable(reason: "Cached capacity is invalid or has no provenance")
+        }
+        switch cached.applyingFreshness(maxAge: capacityTTL, now: now) {
+        case .available:
+            return .available(value: value, measuredAt: date, source: "Cached · \(source)")
+        default:
+            return .stale(value: value, measuredAt: date, source: "Cached · \(source)")
+        }
+    }
+
+    static func scan(_ snapshot: WidgetSnapshot?, now: Date) -> Measurement<WidgetSnapshot> {
+        guard let snapshot, snapshot.schemaVersion == 2,
+              let date = snapshot.lastScanDate, let source = snapshot.scanSource, !source.isEmpty else {
+            return .unavailable(reason: "No dated scan available")
+        }
+        return Measurement.available(value: snapshot, measuredAt: date, source: source)
+            .applyingFreshness(maxAge: scanTTL, now: now)
+    }
+}
+// MARK: - End pure widget measurement policy
 
 // MARK: - Timeline
 
 struct DiskDoomEntry: TimelineEntry {
     let date: Date
-    let freeBytes: Int64
-    let totalBytes: Int64
-    let healthGrade: String?
-    let lastScanDate: Date?
-    let daysUntilFull: Int?
-    let topHogs: [WidgetSnapshot.Hog]
+    let capacity: Measurement<StorageCapacity>
+    let scan: Measurement<WidgetSnapshot>
+    var healthGrade: String? { scan.availableValue?.healthGrade }
+    var lastScanDate: Date? { scan.measuredAt }
+    var daysUntilFull: Int? { scan.availableValue?.daysUntilFull }
+    var topHogs: [WidgetSnapshot.Hog] { Array((scan.availableValue?.topHogs ?? []).prefix(3)) }
+    var totalBytes: Int64 { capacity.availableValue?.totalBytes ?? 0 }
+    var freeBytes: Int64 { capacity.availableValue?.freeBytes ?? 0 }
+
+    var capacityLabel: String {
+        guard let date = capacity.measuredAt else { return capacity.statusLabel }
+        let label = capacity.source?.hasPrefix("Cached") == true ? "Cached · \(capacity.statusLabel)" : capacity.statusLabel
+        return "\(label) · \(date.formatted(date: .omitted, time: .shortened))"
+    }
+
+    func aged(at date: Date) -> Self {
+        Self(date: date, capacity: capacity.applyingFreshness(maxAge: WidgetMeasurementPolicy.capacityTTL, now: date),
+             scan: scan.applyingFreshness(maxAge: WidgetMeasurementPolicy.scanTTL, now: date))
+    }
 }
 
 struct DiskDoomProvider: TimelineProvider {
     func placeholder(in context: Context) -> DiskDoomEntry {
-        DiskDoomEntry(date: Date(), freeBytes: 142 * 1_000_000_000, totalBytes: 496 * 1_000_000_000,
-                      healthGrade: "B", lastScanDate: Date(), daysUntilFull: nil,
-                      topHogs: [WidgetSnapshot.Hog(name: "Xcode DerivedData", size: 8_400_000_000),
-                                WidgetSnapshot.Hog(name: "node_modules", size: 2_100_000_000),
-                                WidgetSnapshot.Hog(name: "Downloads", size: 1_800_000_000)])
+        DiskDoomEntry(date: Date(), capacity: .notMeasured, scan: .notMeasured)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (DiskDoomEntry) -> Void) {
@@ -91,23 +130,23 @@ struct DiskDoomProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<DiskDoomEntry>) -> Void) {
-        // Refresh hourly; the app refreshes the snapshot on every scan.
-        completion(Timeline(entries: [current()], policy: .after(Date().addingTimeInterval(3_600))))
+        let entry = current()
+        let expirations = [entry.capacity.measuredAt.map { $0.addingTimeInterval(WidgetMeasurementPolicy.capacityTTL + 1) },
+                           entry.scan.measuredAt.map { $0.addingTimeInterval(WidgetMeasurementPolicy.scanTTL + 1) }]
+            .compactMap { $0 }.filter { $0 > entry.date }.sorted()
+        // Expiry entries invalidate displayed evidence even if WidgetKit delays the next read.
+        completion(Timeline(entries: [entry] + expirations.map { entry.aged(at: $0) },
+                            policy: .after(entry.date.addingTimeInterval(300))))
     }
 
     private func current() -> DiskDoomEntry {
-        let live = SharedWidgetStore.liveCapacity()
+        let now = Date()
+        let live = SharedWidgetStore.liveCapacity(now: now)
         let snapshot = SharedWidgetStore.read()
-        let free = live.free > 0 ? live.free : (snapshot?.freeBytes ?? 0)
-        let total = live.total > 0 ? live.total : (snapshot?.totalBytes ?? 0)
         return DiskDoomEntry(
-            date: Date(),
-            freeBytes: free,
-            totalBytes: total,
-            healthGrade: snapshot?.healthGrade,
-            lastScanDate: snapshot?.lastScanDate,
-            daysUntilFull: snapshot?.daysUntilFull,
-            topHogs: Array((snapshot?.topHogs ?? []).prefix(3)))
+            date: now,
+            capacity: WidgetMeasurementPolicy.capacity(live: live, cached: snapshot?.schemaVersion == 2 ? snapshot?.capacity : nil, now: now),
+            scan: WidgetMeasurementPolicy.scan(snapshot, now: now))
     }
 }
 
@@ -160,11 +199,11 @@ private struct GaugeRing: View {
                 .stroke(stateColor(freePercent: freePercent), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             VStack(spacing: 1) {
-                Text(fmt(freeBytes))
+                Text(totalBytes > 0 ? fmt(freeBytes) : "—")
                     .font(.system(size: diameter / 5.2, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .minimumScaleFactor(0.6)
-                Text("free")
+                Text(totalBytes > 0 ? "free" : "unavailable")
                     .font(.system(size: diameter / 10))
                     .foregroundStyle(.secondary)
             }
@@ -184,6 +223,7 @@ private struct SmallWidgetView: View {
             Text(entry.totalBytes > 0 ? "of \(fmt(entry.totalBytes))" : "—")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            Text(entry.capacityLabel).font(.system(size: 8)).foregroundStyle(.secondary)
         }
         .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -212,12 +252,14 @@ private struct MediumWidgetView: View {
                 }
                 statRow(label: "Used", value: entry.totalBytes > 0 ? fmt(max(0, entry.totalBytes - entry.freeBytes)) : "—")
                 statRow(label: "Free", value: entry.totalBytes > 0 ? "\(fmt(entry.freeBytes)) (\(Int(Double(entry.freeBytes) / Double(max(entry.totalBytes, 1)) * 100))%)" : "—")
+                Text(entry.capacityLabel).font(.caption2).foregroundStyle(.secondary)
                 if let days = entry.daysUntilFull, days < 90 {
                     Label("Full in \(days)d", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption2)
                         .foregroundStyle(days < 30 ? .red : .orange)
-                } else if let last = entry.lastScanDate {
-                    Label("Scanned \(RelativeDateWidget.string(from: last))", systemImage: "clock.arrow.circlepath")
+                }
+                if let last = entry.lastScanDate {
+                    Label("Last scan · \(entry.scan.statusLabel) · \(RelativeDateWidget.string(from: last))", systemImage: "clock.arrow.circlepath")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -278,6 +320,7 @@ private struct LargeWidgetView: View {
                     statRow("Used", entry.totalBytes > 0 ? fmt(max(0, entry.totalBytes - entry.freeBytes)) : "—")
                     statRow("Free", entry.totalBytes > 0 ? fmt(entry.freeBytes) : "—")
                     statRow("Capacity", entry.totalBytes > 0 ? fmt(entry.totalBytes) : "—")
+                    Text(entry.capacityLabel).font(.caption2).foregroundStyle(.secondary)
                     if let days = entry.daysUntilFull, days < 90 {
                         Label("Disk full in ~\(days) days", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption.weight(.medium))
@@ -290,7 +333,7 @@ private struct LargeWidgetView: View {
             Divider()
 
             if entry.topHogs.isEmpty {
-                Text("Top space hogs appear here after a scan.")
+                Text(entry.scan.statusLabel == "Stale" ? "Scan data expired. Open DiskDoom to scan again." : "Top space hogs appear here after a scan.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -326,7 +369,7 @@ private struct LargeWidgetView: View {
 
             HStack {
                 if let last = entry.lastScanDate {
-                    Text("Last scan \(RelativeDateWidget.string(from: last))")
+                    Text("Last scan · \(entry.scan.statusLabel) · \(RelativeDateWidget.string(from: last))")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

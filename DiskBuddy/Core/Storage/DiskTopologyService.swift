@@ -50,7 +50,7 @@ struct APFSVolumeInfo: Identifiable, Sendable {
     let role: VolumeRole
     let device: String // disk1s5
     let mountPoint: String?
-    let usedBytes: Int64 // CapacityInUse (this volume's footprint, not additive)
+    let usedBytes: Int64? // nil means diskutil did not report a measurement
     let isEncrypted: Bool
 }
 
@@ -94,8 +94,7 @@ struct ExtVolumeInfo: Identifiable, Sendable {
     let id: String // mount path
     let name: String
     let mountPath: String
-    let totalBytes: Int64
-    let freeBytes: Int64
+    let capacity: Measurement<StorageCapacity>
     let filesystem: String
     let isEjectable: Bool
 }
@@ -112,10 +111,30 @@ final class DiskTopologyService: ObservableObject, @unchecked Sendable {
     @Published private(set) var containers: [APFSContainerInfo] = []
     @Published private(set) var snapshots: [SnapshotEntry] = []
     @Published private(set) var externals: [ExtVolumeInfo] = []
-    @Published private(set) var dataVolumeName = "Macintosh HD"
-    @Published private(set) var dataTotalBytes: Int64 = 0
-    @Published private(set) var dataFreeBytes: Int64 = 0
+    @Published private(set) var dataVolumeName = "Startup volume"
+    @Published private(set) var capacityMeasurement: Measurement<StorageCapacity> = .notMeasured
     @Published private(set) var isLoading = false
+    private var capacityPollingTask: Task<Void, Never>?
+    static let capacityFreshness: TimeInterval = 90
+
+    var currentCapacity: Measurement<StorageCapacity> {
+        capacityMeasurement.applyingFreshness(maxAge: Self.capacityFreshness)
+    }
+
+    deinit { capacityPollingTask?.cancel() }
+
+    @MainActor
+    func startCapacityMonitoring() {
+        guard capacityPollingTask == nil else { return }
+        capacityPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 60_000_000_000) }
+                catch { break }
+                guard self != nil, !Task.isCancelled else { break }
+                await self?.loadCapacity()
+            }
+        }
+    }
 
     // MARK: Split loads (progressive UI: topology+capacity first)
 
@@ -130,11 +149,12 @@ final class DiskTopologyService: ObservableObject, @unchecked Sendable {
     }
 
     func loadCapacity() async {
-        let capacity = await Task.detached { Self.readRootCapacity() }.value
+        let capacity = await Task.detached(priority: .utility) { StorageCapacityReader.read() }.value
+        guard !Task.isCancelled else { return }
+        let name = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeNameKey]).volumeName
         await MainActor.run {
-            self.dataVolumeName = capacity.name
-            self.dataTotalBytes = capacity.total
-            self.dataFreeBytes = capacity.free
+            self.dataVolumeName = name ?? "Startup volume"
+            self.capacityMeasurement = capacity
         }
     }
 
@@ -188,8 +208,9 @@ final class DiskTopologyService: ObservableObject, @unchecked Sendable {
                 guard let uuid = raw["APFSContainerUUID"] as? String,
                       let ref = raw["ContainerReference"] as? String,
                       let ceiling = raw["CapacityCeiling"] as? Int64,
-                      let free = raw["CapacityFree"] as? Int64
+                       let free = raw["CapacityFree"] as? Int64
                 else { continue }
+                guard StorageCapacity(totalBytes: ceiling, freeBytes: free) != nil else { continue }
                 let stores: [(String, Int64)] = (raw["PhysicalStores"] as? [[String: Any]] ?? []).compactMap {
                     guard let dev = $0["DeviceIdentifier"] as? String, let size = $0["Size"] as? Int64 else { return nil }
                     return (dev, size)
@@ -204,7 +225,7 @@ final class DiskTopologyService: ObservableObject, @unchecked Sendable {
                     return APFSVolumeInfo(
                         id: vuuid, name: name, role: role, device: device,
                         mountPoint: dfMounts[device],
-                        usedBytes: vol["CapacityInUse"] as? Int64 ?? 0,
+                        usedBytes: (vol["CapacityInUse"] as? Int64).flatMap { $0 >= 0 ? $0 : nil },
                         isEncrypted: (vol["Encryption"] as? Bool) ?? false)
                 }
                 containers.append(APFSContainerInfo(
@@ -243,17 +264,6 @@ final class DiskTopologyService: ObservableObject, @unchecked Sendable {
             map[device] = parts[8...].joined(separator: " ")
         }
         return map
-    }
-
-    /// User-visible Data capacity: whatever is mounted at "/" (firmlink-aware).
-    private static func readRootCapacity() -> (name: String, total: Int64, free: Int64) {
-        let url = URL(fileURLWithPath: "/")
-        guard let values = try? url.resourceValues(forKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityForOpportunisticUsageKey]),
-              let total = values.volumeTotalCapacity
-        else { return ("Macintosh HD", 0, 0) }
-        return (values.volumeName ?? "Macintosh HD",
-                Int64(total),
-                Int64(values.volumeAvailableCapacityForOpportunisticUsage ?? 0))
     }
 
     private static func readSnapshots() -> [SnapshotEntry] {
@@ -301,14 +311,14 @@ final class DiskTopologyService: ObservableObject, @unchecked Sendable {
                 .volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey,
                 .volumeLocalizedFormatDescriptionKey, .volumeIsRemovableKey, .volumeIsEjectableKey,
             ]),
-                let total = values.volumeTotalCapacity,
                 // Skip the boot volume group members.
                 name != "Macintosh HD" && name != "Macintosh HD - Data"
             else { continue }
             result.append(ExtVolumeInfo(
                 id: mount, name: values.volumeName ?? name, mountPath: mount,
-                totalBytes: Int64(total),
-                freeBytes: Int64(values.volumeAvailableCapacity ?? 0),
+                capacity: StorageCapacityReader.fromReadings(
+                    totalBytes: values.volumeTotalCapacity.map(Int64.init),
+                    freeBytes: values.volumeAvailableCapacity.map(Int64.init)),
                 filesystem: values.volumeLocalizedFormatDescription ?? "Unknown",
                 isEjectable: values.volumeIsEjectable ?? false))
         }

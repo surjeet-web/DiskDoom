@@ -7,7 +7,7 @@ import Foundation
 // - com.apple.quarantine fields are SEMICOLON-delimited, not "|".
 // - Confidence reflects which signals actually fired.
 
-struct FileProvenance {
+struct FileProvenance: Sendable {
     let filePath: String
     let createdBy: String?
     let method: CreationMethod?
@@ -18,7 +18,7 @@ struct FileProvenance {
     let confidence: Confidence
     let xattrNames: [String]
 
-    enum CreationMethod: String {
+    enum CreationMethod: String, Sendable {
         // ONLY produced when real origin metadata was read (kMDItemWhereFroms,
         // the com.apple.quarantine xattr, or kMDItemCreator) — see analyzeSync.
         case downloaded, appCreated
@@ -37,11 +37,12 @@ struct FileProvenance {
         }
     }
 
-    enum Confidence: String {
+    enum Confidence: String, Sendable {
         case high, medium, low
     }
 }
 
+@MainActor
 final class FileProvenanceEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var current: FileProvenance?
     @Published private(set) var isAnalyzing = false
@@ -49,15 +50,19 @@ final class FileProvenanceEngine: ObservableObject, @unchecked Sendable {
 
     func analyze(path: String) {
         task?.cancel()
+        isAnalyzing = true
         task = Task { [weak self] in
-            guard let self else { return }
-            await MainActor.run { self.isAnalyzing = true }
+            guard let self, !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                self.isAnalyzing = true
+            }
             let result = await Task.detached { Self.analyzeSync(path: path) }.value
             guard !Task.isCancelled else {
-                await MainActor.run { self.isAnalyzing = false }
                 return
             }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.current = result
                 self.isAnalyzing = false
             }
@@ -67,11 +72,12 @@ final class FileProvenanceEngine: ObservableObject, @unchecked Sendable {
     func cancel() {
         task?.cancel()
         task = nil
+        isAnalyzing = false
     }
 
     // MARK: Synchronous analysis (runs off-main)
 
-    private static func analyzeSync(path: String) -> FileProvenance {
+    nonisolated private static func analyzeSync(path: String) -> FileProvenance {
         let fm = FileManager.default
         let url = URL(fileURLWithPath: path)
         let created = (try? fm.attributesOfItem(atPath: path))?[.creationDate] as? Date
@@ -117,19 +123,10 @@ final class FileProvenanceEngine: ObservableObject, @unchecked Sendable {
             matchedApp: matched, confidence: confidence, xattrNames: xattrs)
     }
 
-    private static func queryMDItem(path: String, attribute: String) -> String? {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdls")
-        process.arguments = ["-name", attribute, "-raw", path]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+    nonisolated private static func queryMDItem(path: String, attribute: String) -> String? {
         do {
-            try process.run()
-            // Drain before waiting — see DiskTopologyService: a child that
-            // writes more than the 64 KB pipe buffer deadlocks forever.
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            let data = try FeatureProcessRunner.run(executable: "/usr/bin/mdls",
+                arguments: ["-name", attribute, "-raw", path], timeout: 5)
             let output = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard let output, output != "(null)", !output.isEmpty else { return nil }
@@ -139,7 +136,7 @@ final class FileProvenanceEngine: ObservableObject, @unchecked Sendable {
         }
     }
 
-    static func matchApp(from path: String) -> String? {
+    nonisolated static func matchApp(from path: String) -> String? {
         let components = path.split(separator: "/").map(String.init)
         for marker in ["Caches", "Application Support", "HTTPStorages", "Logs", "Preferences"] {
             if let i = components.lastIndex(of: marker), i + 1 < components.count {

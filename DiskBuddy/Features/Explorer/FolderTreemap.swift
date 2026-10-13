@@ -32,7 +32,7 @@ struct FolderTreemap: View {
                                 .font(.system(size: min(13, max(9, rect.height / 4)), weight: .medium))
                                 .lineLimit(max(1, Int(rect.height / 16)))
                                 .foregroundStyle(.white)
-                            Text(node.sizeFormatted)
+                             Text(node.sizeDisplay)
                                 .font(.system(size: min(11, max(8, rect.height / 5))))
                                 .foregroundStyle(.white.opacity(0.82))
                         }

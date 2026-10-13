@@ -18,7 +18,30 @@ struct StoredSnapshot: Codable {
 
 enum ScanStore {
     /// Test hook: redirect snapshot storage (unit tests use a temp directory).
-    static var directoryOverride: URL?
+    static var directoryOverride: URL? {
+        get { overrideStorage.read() }
+        set { overrideStorage.write(newValue) }
+    }
+
+    // The test suite still serializes scoped overrides; the lock prevents
+    // concurrent snapshot readers from racing with a fixture's setter.
+    private static let overrideStorage = DirectoryOverrideStorage()
+    private final class DirectoryOverrideStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: URL?
+
+        func read() -> URL? {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func write(_ value: URL?) {
+            lock.lock()
+            defer { lock.unlock() }
+            self.value = value
+        }
+    }
 
     private static var baseURL: URL {
         directoryOverride ?? FileManager.default.homeDirectoryForCurrentUser

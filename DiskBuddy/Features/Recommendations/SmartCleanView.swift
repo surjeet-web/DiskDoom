@@ -5,6 +5,7 @@ import SwiftUI
 struct SmartCleanView: View {
     @EnvironmentObject var engine: RecommendationsEngine
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var mode: Mode = .recommendations
 
     enum Mode: String, CaseIterable {
@@ -20,9 +21,20 @@ struct SmartCleanView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Smart Clean").font(.title2.weight(.semibold))
+            HStack(spacing: DesignTokens.Space.m) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Smart Clean").font(.title2.weight(.semibold))
+                    Text("Review suggestions, then move selected files to Trash.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
+                Button {
+                    state.showCleanup = true
+                } label: {
+                    Label("Queue (\(state.cleanupItems.count))", systemImage: "tray.full")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityHint("Review staged files before moving anything to Trash")
                 Picker("Mode", selection: $mode) {
                     ForEach(Mode.allCases, id: \.self) { m in Text(m.title).tag(m) }
                 }
@@ -34,13 +46,18 @@ struct SmartCleanView: View {
             if state.records.isEmpty {
                 EmptyState(symbol: "sparkles", title: "Scan first", message: "Recommendations are generated from your real scan data.", actionTitle: "Start Scan (⌘R)", action: { state.startScan() })
             } else {
-                switch mode {
-                case .recommendations: recommendationsList
-                case .large: fileList(files: engine.largeFiles, empty: "No files above \(ByteFormatting.format(engine.largeThreshold)).")
-                case .old: fileList(files: engine.oldFiles, empty: "No files older than \(engine.oldMonths) months.")
+                Group {
+                    switch mode {
+                    case .recommendations: recommendationsList
+                    case .large: fileList(files: engine.largeFiles, empty: "No files above \(ByteFormatting.format(engine.largeThreshold)).")
+                    case .old: fileList(files: engine.oldFiles, empty: "No files older than \(engine.oldMonths) months.")
+                    }
                 }
+                .id(mode)
+                .transition(.opacity)
             }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.base), value: mode)
         // WHY: `.onAppear` ran against a *partial* index (cache hydration streams the
         // records in), so recommendations were computed from a few thousand
         // records and never recomputed. Gate on a finished scan and re-run when
@@ -56,8 +73,10 @@ struct SmartCleanView: View {
             if engine.quickCleanBytes > 0 {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Quick Clean can free \(ByteFormatting.format(engine.quickCleanBytes))")
+                        Text("Review up to \(ByteFormatting.format(engine.quickCleanBytes))")
                             .font(.headline)
+                        Text("\(engine.quickCleanFileCount) suggested files · nothing is removed until you confirm in the queue")
+                            .font(.caption).foregroundStyle(.secondary)
                         // WHY: only the top paths each recommendation lists are
                         // staged — state what is offered (and out of what) so
                         // the headline can't promise un-actionable space.
@@ -68,7 +87,7 @@ struct SmartCleanView: View {
                         }
                     }
                     Spacer()
-                    Button("Quick Clean") {
+                    Button("Review Quick Clean") {
                         for rec in engine.recommendations where rec.confidence == .highlyRecommended {
                             for item in rec.paths {
                                 state.stage(source: "Quick Clean", path: item.path, bytes: item.bytes)
@@ -82,42 +101,84 @@ struct SmartCleanView: View {
                 .padding(DesignTokens.Space.m)
                 Divider()
             }
-            ScrollView {
-                LazyVStack(spacing: DesignTokens.Space.m) {
-                    ForEach(engine.recommendations) { rec in
-                        VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
-                            HStack {
-                                Text(rec.title).font(.headline)
-                                Spacer()
-                                Text(confidenceLabel(rec.confidence))
-                                    .font(.caption2.weight(.bold))
-                                    .padding(.horizontal, 8).padding(.vertical, 3)
-                                    .background(confidenceColor(rec.confidence).opacity(0.15), in: Capsule())
-                                    .foregroundStyle(confidenceColor(rec.confidence))
-                            }
-                            Text(rec.detail).font(.callout).foregroundStyle(.secondary)
-                            // WHY: only `rec.paths` can be staged, so the pair
-                            // must distinguish the offered subset from the rest.
-                            Text("\(ByteFormatting.format(rec.stageableBytes)) of \(ByteFormatting.format(rec.bytes)) reclaimable · top \(rec.paths.count) files shown")
-                                .font(.callout.monospacedDigit()).foregroundStyle(.green)
-                            HStack {
-                                Spacer()
-                                Button("Stage These") {
-                                    for item in rec.paths {
-                                        state.stage(source: "Smart Clean", path: item.path, bytes: item.bytes)
-                                    }
-                                    state.showCleanup = true
-                                }
-                                .buttonStyle(.bordered).controlSize(.small)
-                            }
+            if engine.recommendations.isEmpty {
+                EmptyState(
+                    symbol: "checkmark.seal",
+                    title: "Nothing to recommend yet",
+                    message: "No stale files, app caches, or old logs were found in this scan. Check Large Files or Old Files for items to review manually."
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: DesignTokens.Space.m) {
+                        ForEach(engine.recommendations) { rec in
+                            recommendationCard(rec)
                         }
-                        .padding(DesignTokens.Space.m)
-                        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
                     }
+                    .padding()
                 }
-                .padding()
             }
         }
+    }
+
+    private func recommendationCard(_ rec: Recommendation) -> some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+            HStack {
+                Text(rec.title).font(.headline)
+                Spacer()
+                Text(confidenceLabel(rec.confidence))
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(confidenceColor(rec.confidence).opacity(0.15), in: Capsule())
+                    .foregroundStyle(confidenceColor(rec.confidence))
+            }
+            Text(rec.detail).font(.callout).foregroundStyle(.secondary)
+            Text("Up to \(ByteFormatting.format(rec.stageableBytes)) offered · \(ByteFormatting.format(rec.bytes)) found in total")
+                .font(.callout.monospacedDigit()).foregroundStyle(.green)
+            ForEach(rec.paths.prefix(3), id: \.path) { item in
+                HStack(spacing: DesignTokens.Space.s) {
+                    Image(systemName: "doc")
+                        .foregroundStyle(.secondary)
+                    Text(item.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(item.path)
+                    Spacer(minLength: DesignTokens.Space.s)
+                    Text(ByteFormatting.format(item.bytes))
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            if rec.paths.count > 3 {
+                Text("+ \(rec.paths.count - 3) more files in this suggestion")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            HStack {
+                Text("\(stagedCount(in: rec)) of \(rec.paths.count) staged")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Stage \(rec.paths.count) & Review") {
+                    for item in rec.paths {
+                        state.stage(source: "Smart Clean", path: item.path, bytes: item.bytes)
+                    }
+                    state.showCleanup = true
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(rec.paths.isEmpty)
+            }
+        }
+        .padding(DesignTokens.Space.m)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+    }
+
+    private func stagedCount(in rec: Recommendation) -> Int {
+        let staged = Set(state.cleanupItems.map { ($0.path as NSString).expandingTildeInPath })
+        return rec.paths.filter { staged.contains(($0.path as NSString).expandingTildeInPath) }.count
+    }
+
+    private func isStaged(_ path: String) -> Bool {
+        let expanded = (path as NSString).expandingTildeInPath
+        return state.cleanupItems.contains { ($0.path as NSString).expandingTildeInPath == expanded }
     }
 
     private func fileList(files: [ScannedRecord], empty: String) -> some View {
@@ -137,8 +198,12 @@ struct SmartCleanView: View {
                         Text(ByteFormatting.format(file.bytes))
                             .font(.callout.monospacedDigit())
                             .frame(width: 80, alignment: .trailing)
-                        Button("Stage") {
-                            state.stage(source: "Smart Clean", path: file.path, bytes: file.bytes)
+                        Button(isStaged(file.path) ? "Review Queue" : "Stage") {
+                            if isStaged(file.path) {
+                                state.showCleanup = true
+                            } else {
+                                state.stage(source: "Smart Clean", path: file.path, bytes: file.bytes)
+                            }
                         }
                         .buttonStyle(.bordered).controlSize(.small)
                     }

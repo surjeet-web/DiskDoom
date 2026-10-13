@@ -78,8 +78,24 @@ struct SunburstView: View {
                         hoveredID = nil
                     }
                 }
+                .accessibilityHidden(true) // Folder menu below offers keyboard access.
             }
-            CategoryLegend(categories: NodeCategory.allCases)
+            HStack {
+                Menu {
+                    ForEach(inner) { node in
+                        Button("\(node.name) · \(node.sizeString)") {
+                            state.selectedNode = node
+                            state.inspectorVisible = true
+                            if !node.children.isEmpty { drillPath.append(node) }
+                        }
+                    }
+                } label: {
+                    Label("Browse this level", systemImage: "list.bullet")
+                }
+                .help("Select a folder; folders with children open the next level")
+                Spacer()
+                CategoryLegend(categories: NodeCategory.allCases)
+            }
         }
         .padding(DesignTokens.Space.m)
     }

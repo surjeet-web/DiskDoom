@@ -8,13 +8,14 @@ struct WhatIfView: View {
     @EnvironmentObject var devCacheEngine: DevCacheEngine
     @EnvironmentObject var inventory: AppInventoryService
     @EnvironmentObject var lifecycleEngine: AppLifecycleEngine
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var showExecuteConfirmation = false
     @State private var report: SimReport?
 
     var body: some View {
         VStack(spacing: 0) {
-            storageGauge
+            TimelineView(.periodic(from: .now, by: 30)) { _ in storageGauge }
             Divider()
             if simulator.isBuilding {
                 buildingView
@@ -28,6 +29,7 @@ struct WhatIfView: View {
                 executeBar
             }
         }
+        .disabled(simulator.isExecuting)
         .task {
             if simulator.items.isEmpty, !simulator.isBuilding {
                 await simulator.build(
@@ -40,10 +42,11 @@ struct WhatIfView: View {
         .alert("Execute \(simulator.selectedIDs.count) Actions?", isPresented: $showExecuteConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Execute", role: .destructive) {
-                report = simulator.executeSelected(state: state)
+                Task { report = await simulator.executeSelected(state: state) }
             }
+            .disabled(simulator.isExecuting)
         } message: {
-            Text("This will free \(ByteFormatting.format(simulator.selectedSavings)). Filesystem items go to the Trash first — the only permanent action is Empty Trash. Inspect-first items may need review.")
+            Text("Estimated \(ByteFormatting.format(simulator.selectedSavings)) eligible for cleanup. Filesystem items go to Trash; empty Trash to reclaim storage. The only permanent action here is Empty Trash. Inspect-first items may need review.")
         }
         .sheet(item: $report) { report in
             SimReportSheet(report: report)
@@ -58,6 +61,7 @@ struct WhatIfView: View {
                 title: "Current",
                 free: simulator.currentFree,
                 percent: simulator.currentFreePercent,
+                unavailable: simulator.currentCapacity.statusLabel,
                 tint: .blue)
 
             VStack(spacing: 4) {
@@ -67,16 +71,17 @@ struct WhatIfView: View {
                 Text(ByteFormatting.format(simulator.selectedSavings))
                     .font(.callout.weight(.bold).monospacedDigit())
                     .foregroundStyle(.green)
-                Text("freed")
+                Text(simulator.selectionHasOverlaps ? "overlapping estimates" : "potential savings (estimate)")
                     .font(.caption)
                     .foregroundStyle(.green)
             }
 
             gaugeColumn(
-                title: "After Cleanup",
+                title: "Projected (Trash emptied)",
                 free: simulator.projectedFree,
                 percent: simulator.projectedFreePercent,
-                tint: simulator.projectedFreePercent > 30 ? .green : simulator.projectedFreePercent > 15 ? .yellow : .orange)
+                unavailable: simulator.projectionUnavailableReason,
+                tint: .green)
 
             Divider().frame(height: 80)
 
@@ -84,8 +89,8 @@ struct WhatIfView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "internaldrive.fill").foregroundStyle(.blue)
                     VStack(alignment: .leading) {
-                        Text("Used: \(ByteFormatting.format(simulator.currentUsed))").font(.callout.monospacedDigit())
-                        Text("→ \(ByteFormatting.format(simulator.projectedUsed))")
+                        Text("Used: \(simulator.currentUsed.map { ByteFormatting.format($0) } ?? simulator.currentCapacity.statusLabel)").font(.callout.monospacedDigit())
+                        Text("→ \(simulator.projectedUsed.map { ByteFormatting.format($0) } ?? "Cannot estimate")")
                             .font(.callout.monospacedDigit())
                             .foregroundStyle(.green)
                     }
@@ -93,8 +98,8 @@ struct WhatIfView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "percent").foregroundStyle(.secondary)
                     VStack(alignment: .leading) {
-                        Text("\(String(format: "%.1f", 100 - simulator.currentFreePercent))% used").font(.callout.monospacedDigit())
-                        Text("→ \(String(format: "%.1f", 100 - simulator.projectedFreePercent))% used")
+                        Text(simulator.currentFreePercent.map { String(format: "%.1f%% used", 100 - $0) } ?? simulator.currentCapacity.statusLabel).font(.callout.monospacedDigit())
+                        Text(simulator.projectedFreePercent.map { "→ " + String(format: "%.1f%% used", 100 - $0) } ?? "Cannot estimate")
                             .font(.callout.monospacedDigit())
                             .foregroundStyle(.green)
                     }
@@ -107,10 +112,10 @@ struct WhatIfView: View {
             Spacer()
         }
         .padding(DesignTokens.Space.m)
-        .animation(.easeOut(duration: 0.2), value: simulator.selectedIDs)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: simulator.selectedIDs)
     }
 
-    private func gaugeColumn(title: String, free: Int64, percent: Double, tint: Color) -> some View {
+    private func gaugeColumn(title: String, free: Int64?, percent: Double?, unavailable: String, tint: Color) -> some View {
         VStack(spacing: DesignTokens.Space.s) {
             Text(title)
                 .font(.caption)
@@ -121,17 +126,20 @@ struct WhatIfView: View {
                 Circle()
                     .stroke(Color.secondary.opacity(0.12), lineWidth: 12)
                     .frame(width: 104, height: 104)
-                Circle()
-                    .trim(from: 0, to: min(max(CGFloat(percent) / 100, 0), 1))
-                    .stroke(tint, style: StrokeStyle(lineWidth: 12, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 104, height: 104)
-                VStack(spacing: 2) {
-                    Text(ByteFormatting.format(free))
-                        .font(.callout.weight(.bold).monospacedDigit())
-                    Text("free")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                if let free, let percent {
+                    Circle()
+                        .trim(from: 0, to: min(max(CGFloat(percent) / 100, 0), 1))
+                        .stroke(tint, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 104, height: 104)
+                    VStack(spacing: 2) {
+                        Text(ByteFormatting.format(free))
+                            .font(.callout.weight(.bold).monospacedDigit())
+                        Text("free").font(.caption2).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(unavailable).font(.caption2).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center).frame(width: 96)
                 }
             }
         }
@@ -257,7 +265,7 @@ struct WhatIfView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(simulator.selectedIDs.count) items selected")
                     .font(.callout.weight(.medium))
-                Text("\(ByteFormatting.format(simulator.selectedSavings)) will be freed")
+                Text("Estimated \(ByteFormatting.format(simulator.selectedSavings)) eligible for cleanup; empty Trash to reclaim storage")
                     .font(.caption)
                     .foregroundStyle(.green)
                     .monospacedDigit()
@@ -279,12 +287,12 @@ struct WhatIfView: View {
             Button {
                 showExecuteConfirmation = true
             } label: {
-                Label("Execute Cleanup", systemImage: "bolt.fill")
+                Label(simulator.isExecuting ? "Executing…" : "Execute Cleanup", systemImage: "bolt.fill")
                     .fontWeight(.semibold)
             }
             .buttonStyle(.borderedProminent)
             .tint(.green)
-            .disabled(simulator.selectedIDs.isEmpty)
+            .disabled(simulator.selectedIDs.isEmpty || simulator.isExecuting)
             .keyboardShortcut(.return, modifiers: .command)
         }
         .padding(.horizontal, DesignTokens.Space.m)
@@ -378,11 +386,13 @@ private struct SimItemRow: View {
 // MARK: - Report sheet
 
 private struct SimReportSheet: View {
+    @EnvironmentObject var overlays: OverlayStack
     let report: SimReport
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: DesignTokens.Space.l) {
+            ModalHeader(title: "Cleanup Report", overlayID: "simulation-report") { dismiss() }
             Image(systemName: report.failed == 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(report.failed == 0 ? .green : .orange)
@@ -406,7 +416,7 @@ private struct SimReportSheet: View {
                 }
                 VStack {
                     Text(ByteFormatting.format(report.totalFreed)).font(.title.weight(.bold)).foregroundStyle(.green)
-                    Text("Freed").font(.caption).foregroundStyle(.secondary)
+                    Text("Bytes handled").font(.caption).foregroundStyle(.secondary)
                 }
             }
 
@@ -451,6 +461,8 @@ private struct SimReportSheet: View {
         }
         .padding()
         .frame(width: 460)
+        .onAppear { overlays.present("simulation-report") }
+        .onDisappear { overlays.dismiss("simulation-report") }
     }
 }
 

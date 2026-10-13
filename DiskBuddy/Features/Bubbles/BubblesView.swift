@@ -8,7 +8,10 @@ struct BubblesView: View {
     @State private var drillPath: [ScanNode] = []
 
     private var nodes: [ScanNode] {
-        if let last = drillPath.last, !last.children.isEmpty { return last.children }
+        if let path = drillPath.last?.path,
+           let current = state.currentScanNode(path: path) {
+            return current.children
+        }
         return state.effectiveTopLevel
     }
 
@@ -31,40 +34,52 @@ struct BubblesView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 16)], spacing: 16) {
                     ForEach(nodes.sorted { $0.sizeBytes > $1.sizeBytes }, id: \.id) { node in
                         let diameter = 44 + 76 * sqrt(CGFloat(node.sizeBytes) / CGFloat(maxBytes))
-                        // Not a Button: a Button swallows the single tap, so a
-                        // `.onTapGesture(count: 2)` layered on it never fires and
-                        // drill-down is unreachable. Plain view + contentShape
-                        // lets both gestures coexist.
                         VStack(spacing: 4) {
-                            ZStack {
-                                Circle()
-                                    .fill(node.category.color.opacity(state.selectedNode?.id == node.id ? 1 : 0.8))
-                                    .frame(width: diameter, height: diameter)
-                                    .overlay(Circle().stroke(state.selectedNode?.id == node.id ? .white : .clear, lineWidth: 2))
-                                if diameter > 60 {
-                                    VStack(spacing: 0) {
-                                        Text(node.name)
-                                            .font(.caption.weight(.medium))
-                                            .foregroundStyle(.white)
-                                            .lineLimit(1)
-                                        Text(node.sizeString)
-                                            .font(.caption2.monospacedDigit())
-                                            .foregroundStyle(.white.opacity(0.85))
+                            Button {
+                                state.selectedNode = node
+                            } label: {
+                                ZStack {
+                                    Circle()
+                                        .fill(node.category.color.opacity(state.selectedNode?.id == node.id ? 1 : 0.8))
+                                        .frame(width: diameter, height: diameter)
+                                        .overlay(Circle().stroke(state.selectedNode?.id == node.id ? .white : .clear, lineWidth: 2))
+                                    if diameter > 60 {
+                                        VStack(spacing: 0) {
+                                            Text(node.name)
+                                                .font(.caption.weight(.medium))
+                                                .foregroundStyle(.white)
+                                                .lineLimit(1)
+                                            Text(node.sizeString)
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.white.opacity(0.85))
+                                        }
+                                        .frame(width: diameter - 12)
                                     }
-                                    .frame(width: diameter - 12)
                                 }
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Select \(node.name), \(node.sizeString)")
                             if diameter <= 60 {
                                 Text(node.name)
                                     .font(.caption)
                                     .lineLimit(1)
                                     .frame(width: 100)
                             }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture { state.selectedNode = node }
-                        .onTapGesture(count: 2) {
-                            if !node.children.isEmpty { drillPath.append(node) }
+                            if !node.children.isEmpty {
+                                Button("Open \(node.name)", systemImage: "chevron.right") {
+                                    drillPath.append(node)
+                                }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .help("Open \(node.name)")
+                            } else if node.isCollapsed {
+                                Button("Index \(node.name)", systemImage: "arrow.clockwise") {
+                                    state.expandNode(path: node.path)
+                                }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .help("Index \(node.name) to browse its contents")
+                            }
                         }
                         .help(node.tooltip)
                         .contextMenu {

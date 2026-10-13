@@ -4,10 +4,24 @@ import SwiftUI
 
 struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
 
     var body: some View {
         VStack(spacing: 24) {
+            HStack {
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("Close About")
+                .accessibilityLabel("Close About")
+                .keyboardShortcut(.cancelAction)
+            }
             DiskDoomLogo(style: .iconOnly, size: 120)
+                .scaleEffect(appeared ? 1 : 0.94)
+                .opacity(appeared ? 1 : 0)
             VStack(spacing: 4) {
                 HStack(spacing: 0) {
                     Text("DISK")
@@ -49,6 +63,10 @@ struct AboutView: View {
         .padding(32)
         .frame(width: 360)
         .background(Color(red: 0.06, green: 0.06, blue: 0.1))
+        .onAppear {
+            if reduceMotion { appeared = true }
+            else { withAnimation(DesignTokens.Motion.entrance) { appeared = true } }
+        }
     }
 
     private var appVersion: String {

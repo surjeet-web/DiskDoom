@@ -18,6 +18,14 @@ struct FolderMeasurement: Sendable, Codable, Hashable {
     /// confident total. Counted so the summary can say "· N folders
     /// unreadable" and the total reads as a lower bound, not a measurement.
     var unreadableFolderCount: Int = 0
+    var measurementSource: String = "Filesystem traversal (logical bytes)"
+
+    var isPartial: Bool { unreadableFolderCount > 0 }
+
+    func evidence(now: Date = Date()) -> Measurement<FolderMeasurement> {
+        Measurement.available(value: self, measuredAt: measuredAt, source: measurementSource + (isPartial ? " · partial lower bounds" : ""))
+            .applyingFreshness(maxAge: FolderMeasurementEngine.measurementTTL, now: now)
+    }
 
     static let currentMeasurementVersion = 1
 }
@@ -43,6 +51,7 @@ struct FolderChild: Identifiable, Sendable, Codable, Hashable {
     /// 0 bytes as if measured — the row must render a lock + "Permission
     /// denied" instead of a size.
     var isUnreadable: Bool = false
+    var isPartial: Bool = false
 }
 
 struct FolderMeasurementCacheKey: Hashable, Sendable {

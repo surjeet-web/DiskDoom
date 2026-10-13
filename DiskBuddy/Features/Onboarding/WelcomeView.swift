@@ -4,6 +4,7 @@ import SwiftUI
 
 struct WelcomeView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
 
     var body: some View {
@@ -35,7 +36,7 @@ struct WelcomeView: View {
             .opacity(appeared ? 1 : 0)
             Spacer()
             Button("Get Started") {
-                withAnimation(.easeOut(duration: DesignTokens.Motion.base)) {
+                withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
                     state.onboardingStep = .fullDiskAccess
                 }
             }
@@ -52,10 +53,8 @@ struct WelcomeView: View {
         .padding(DesignTokens.Space.xl)
         .frame(width: DesignTokens.Layout.onboardingWidth, height: 620)
         .onAppear {
-            let motionOK = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            withAnimation(.easeOut(duration: motionOK ? DesignTokens.Motion.slow : 0)) {
-                appeared = true
-            }
+            if reduceMotion { appeared = true }
+            else { withAnimation(DesignTokens.Motion.entrance) { appeared = true } }
         }
     }
 }

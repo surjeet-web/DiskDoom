@@ -47,7 +47,7 @@ enum LaunchJobs {
 
         // ── Background: precompute + probe (bounded to 2 workers) ──
         coordinator.registerBackground(name: "Scan app inventory") {
-            inventory.scan()
+            await inventory.scan()
         }
         coordinator.registerBackground(name: "Precompute litter scores") {
             await MainActor.run { litter.compute(apps: inventory.apps, launchDays: lifecycle.trackedDaysSinceLaunch) }
@@ -61,15 +61,10 @@ enum LaunchJobs {
         }
         coordinator.registerBackground(name: "Record usage snapshot") {
             // Forecast history: one capacity measurement per launch.
-            let url = URL(fileURLWithPath: "/")
-            if let v = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
-               let total = v.volumeTotalCapacity {
-                let free = v.volumeAvailableCapacityForImportantUsage ?? Int64(v.volumeAvailableCapacity ?? 0)
-                let capacity = Int64(total)
-                let used = capacity - free
+            if let capacity = StorageCapacityReader.read().availableValue {
                 await MainActor.run {
                     forecast.recordSnapshot(
-                        totalCapacity: capacity, usedSize: used, freeSize: free,
+                        totalCapacity: capacity.totalBytes, usedSize: capacity.usedBytes, freeSize: capacity.freeBytes,
                         source: .launch)
                 }
             }
@@ -99,6 +94,7 @@ enum LaunchJobs {
         coordinator.registerBackground(name: "Load storage topology") {
             await topology.loadTopology()
             await topology.loadCapacity()
+            await topology.startCapacityMonitoring()
         }
     }
 }

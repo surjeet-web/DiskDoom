@@ -83,7 +83,7 @@ struct StorageView: View {
                             Image(systemName: "externaldrive.fill").foregroundStyle(.purple)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(vol.name).font(.callout.weight(.medium))
-                                Text("\(vol.filesystem) · \(ByteFormatting.format(vol.freeBytes)) free of \(ByteFormatting.format(vol.totalBytes))")
+                                Text("\(vol.filesystem) · \(vol.capacity.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness).availableValue.map { "\(ByteFormatting.format($0.freeBytes)) free of \(ByteFormatting.format($0.totalBytes))" } ?? vol.capacity.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness).statusLabel)")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -110,25 +110,33 @@ struct StorageView: View {
     // MARK: Capacity headline
 
     private var capacityCard: some View {
-        let used = max(0, topology.dataTotalBytes - topology.dataFreeBytes)
-        let frac = topology.dataTotalBytes > 0 ? Double(used) / Double(topology.dataTotalBytes) : 0
+        let measurement = topology.currentCapacity
         return VStack(spacing: DesignTokens.Space.s) {
             Text(topology.dataVolumeName).font(.title2.weight(.semibold))
             ZStack {
                 Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 16).frame(width: 140, height: 140)
-                Circle().trim(from: 0, to: frac)
-                    .stroke(frac > 0.9 ? Color.red : frac > 0.75 ? Color.orange : Color.blue,
-                            style: StrokeStyle(lineWidth: 16, lineCap: .round))
-                    .frame(width: 140, height: 140)
-                    .rotationEffect(.degrees(-90))
-                VStack(spacing: 2) {
-                    Text(ByteFormatting.format(topology.dataFreeBytes))
-                        .font(.title2.weight(.bold)).monospacedDigit()
-                    Text("free").font(.caption).foregroundStyle(.secondary)
+                if let capacity = measurement.availableValue {
+                    let frac = capacity.usedPercent / 100
+                    Circle().trim(from: 0, to: frac)
+                        .stroke(frac > 0.9 ? Color.red : frac > 0.75 ? Color.orange : Color.blue,
+                                style: StrokeStyle(lineWidth: 16, lineCap: .round))
+                        .frame(width: 140, height: 140)
+                        .rotationEffect(.degrees(-90))
+                    VStack(spacing: 2) {
+                        Text(ByteFormatting.format(capacity.freeBytes))
+                            .font(.title2.weight(.bold)).monospacedDigit()
+                        Text("free").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(measurement.statusLabel).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Text("\(ByteFormatting.format(used)) used of \(ByteFormatting.format(topology.dataTotalBytes))")
+            Text(measurement.availableValue.map { "\(ByteFormatting.format($0.usedBytes)) used of \(ByteFormatting.format($0.totalBytes))" } ?? (measurement.reason ?? measurement.statusLabel))
                 .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            if let date = measurement.measuredAt, let source = measurement.source {
+                Text("Measured \(date.formatted(date: .abbreviated, time: .shortened)) · \(source)")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(DesignTokens.Space.m)
@@ -203,7 +211,7 @@ struct StorageView: View {
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 0) {
-                            Text(ByteFormatting.format(vol.usedBytes)).font(.caption.monospacedDigit())
+                            Text(vol.usedBytes.map { ByteFormatting.format($0) } ?? "Unavailable").font(.caption.monospacedDigit())
                             if let mount = vol.mountPoint {
                                 Button(mount) { NSWorkspace.shared.open(URL(fileURLWithPath: mount)) }
                                     .buttonStyle(.link).font(.caption2).lineLimit(1)

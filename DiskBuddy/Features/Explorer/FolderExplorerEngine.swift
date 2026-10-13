@@ -16,6 +16,7 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
     @Published private(set) var loadingProgress = ""
     @Published private(set) var error: String?
     @Published private(set) var measurement: FolderMeasurement?
+    @Published private(set) var measurementState: Measurement<FolderMeasurement> = .notMeasured
     @Published private(set) var navigationHistory: [String] = []
     @Published private(set) var historyIndex: Int = -1
 
@@ -110,8 +111,9 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func load(canonicalPath: String, pushHistory: Bool, forceRefresh: Bool) async {
+    func load(canonicalPath: String, pushHistory: Bool, forceRefresh: Bool) async {
         await MainActor.run {
+            guard !Task.isCancelled else { return }
             self.isLoading = true
             self.loadingProgress = "Measuring \(displayPath(canonicalPath))…"
             self.error = nil
@@ -124,7 +126,9 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
             let nodes = buildNodes(from: result)
             let visible = applySortAndFilter(nodes)
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.measurement = result
+                self.measurementState = result.evidence()
                 self.currentPath = canonicalPath
                 self.children = visible
                 if pushHistory { self.pushHistoryPath(canonicalPath) }
@@ -134,10 +138,17 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
         } catch is CancellationError {
             return
         } catch {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.isLoading = false
                 self.loadingProgress = ""
                 self.error = error.localizedDescription
+                self.measurementState = Self.failureEvidence(error)
+                self.measurement = nil
+                self.children = []
+                self.selectedNode = nil
+                self.currentPath = canonicalPath
             }
         }
     }
@@ -249,7 +260,16 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
         let shown = children.count
         let total = measurement.children.count
         let countText = shown == total ? "\(total) items" : "\(shown) of \(total) items"
-        return "\(countText) · \(ByteFormatting.format(measurement.totalSize)) total · \(measurement.totalFileCount) files · \(measurement.totalFolderCount) folders"
+        let qualifier = measurement.isPartial ? "lower bounds" : "total"
+        let cached = measurement.evidence().availableValue == nil ? "Stale cached · " : ""
+        return "\(cached)\(countText) · \(ByteFormatting.format(measurement.totalSize)) \(qualifier) · \(measurement.totalFileCount) files · \(measurement.totalFolderCount) folders"
+    }
+
+    static func failureEvidence(_ error: Error) -> Measurement<FolderMeasurement> {
+        if case ExplorerError.accessDenied = error {
+            return .unavailable(reason: error.localizedDescription)
+        }
+        return .error(reason: error.localizedDescription)
     }
 
     /// WHY: permission-denied subtrees contribute nothing to the total, so
@@ -281,7 +301,11 @@ final class FolderExplorerEngine: ObservableObject, @unchecked Sendable {
                 childCount: child.childCount, fileCount: child.fileCount,
                 modified: child.modified, fileExtension: child.fileExtension,
                 percentageOfParent: Double(child.size) / Double(total) * 100,
-                isUnreadable: child.isUnreadable)
+                isUnreadable: child.isUnreadable,
+                isPartial: child.isPartial,
+                parentIsPartial: measurement.isPartial,
+                measuredAt: measurement.measuredAt,
+                measurementSource: measurement.measurementSource)
         }
     }
 

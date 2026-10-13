@@ -19,17 +19,28 @@ struct FolderExplorerView: View {
             } else {
                 BreadcrumbBar(items: engine.breadcrumbPath, onSelect: { engine.navigate(to: $0.path) })
                 summaryBar
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let evidence = engine.measurementState.applyingFreshness(maxAge: FolderMeasurementEngine.measurementTTL, now: context.date)
+                    Text([evidence.statusLabel, evidence.source, evidence.measuredAt.map { $0.formatted(date: .abbreviated, time: .standard) }, evidence.reason].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, DesignTokens.Space.m)
+                }
                 if engine.isLoading { loadingOverlay }
-                content
+                TimelineView(.periodic(from: .now, by: 1)) { _ in content }
             }
         }
         .task {
             guard engine.measurement == nil else { return }
-            engine.navigate(to: FileManager.default.homeDirectoryForCurrentUser.path)
+            let destination = state.folderSearchDestination
+                ?? FileManager.default.homeDirectoryForCurrentUser.path
+            state.folderSearchDestination = nil
+            engine.navigate(to: destination)
         }
         .sheet(item: $inspectorNode) { node in
             FolderInspectorSheet(node: node, engine: engine)
         }
+        .onChange(of: engine.measurement) { _ in inspectorNode = nil }
     }
 
     // MARK: Toolbar
@@ -222,10 +233,15 @@ struct FolderExplorerView: View {
         Button("Inspect Details") { inspectorNode = node }
         Divider()
         Button("Copy Path") { engine.copyPath(node.path) }
+        // WHY: unreadable nodes have no measured size — copying or staging
+        // their 0 would launder "unknown" into a definite number.
         Button("Copy Size") { engine.copySize(node.size) }
+            .disabled(node.isUnreadable || node.isPartial || node.evidence(node.size).availableValue == nil)
         Divider()
         Button("Stage for Cleanup") {
-            state.stage(source: "Explorer", path: node.path, bytes: node.size)
+            // -1 = let AppState measure on disk instead of trusting the
+            // unreadable node's placeholder 0.
+            state.stage(source: "Explorer", path: node.path, bytes: node.isUnreadable || node.isPartial || node.evidence(node.size).availableValue == nil ? -1 : node.size)
             state.showCleanup = true
         }
     }

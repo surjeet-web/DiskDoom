@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 // MARK: - Prototype mock models for §10/11/15/16/18/19/20/21/22
 
@@ -14,23 +15,63 @@ extension Int64 {
 // MARK: Duplicates (§15)
 
 struct DuplicateFile: Identifiable, Hashable {
-    let id = UUID()
+    let id: UUID
     let path: String
     let bytes: Int64
+    init(path: String, bytes: Int64) {
+        self.id = StableDuplicateIdentity.uuid("file:\(path)")
+        self.path = path
+        self.bytes = bytes
+    }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (l: DuplicateFile, r: DuplicateFile) -> Bool { l.id == r.id }
 }
 
 struct DuplicateSet: Identifiable, Hashable {
-    let id = UUID()
+    let id: UUID
     let hashPrefix: String
     let files: [DuplicateFile]
+
+    init(hashPrefix: String, files: [DuplicateFile]) {
+        self.id = StableDuplicateIdentity.uuid("set:\(hashPrefix):\(files.map(\.path).sorted().joined(separator: "\u{0}"))")
+        self.hashPrefix = hashPrefix
+        self.files = files
+    }
 
     var perCopy: Int64 { files.first?.bytes ?? 0 }
     var total: Int64 { perCopy * Int64(files.count) }
     var reclaimable: Int64 { perCopy * Int64(max(files.count - 1, 0)) }
+    /// One policy for the row badge, bulk actions, and What-If simulation.
+    /// Prefer the user's Documents copy, then Desktop, then Downloads; ties
+    /// use the path so filesystem enumeration order never changes the choice.
+    var suggestedKeep: DuplicateFile? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        func rank(_ path: String) -> Int {
+            let expanded = (path as NSString).expandingTildeInPath
+            if expanded.hasPrefix(home + "/Documents/") { return 0 }
+            if expanded.hasPrefix(home + "/Desktop/") { return 1 }
+            if expanded.hasPrefix(home + "/Downloads/") { return 2 }
+            return 3
+        }
+        return files.min { left, right in
+            let l = rank(left.path), r = rank(right.path)
+            return l == r ? left.path < right.path : l < r
+        }
+    }
+
+    func keptFile(selectedID: UUID?) -> DuplicateFile? {
+        files.first { $0.id == selectedID } ?? suggestedKeep
+    }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (l: DuplicateSet, r: DuplicateSet) -> Bool { l.id == r.id }
+}
+
+private enum StableDuplicateIdentity {
+    static func uuid(_ value: String) -> UUID {
+        let bytes = Array(SHA256.hash(data: Data(value.utf8)))
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
 }
 
 enum MockDuplicates {
@@ -74,7 +115,7 @@ struct AppEntry: Identifiable, Hashable, Codable {
         installDate.map { max(0, Int(Date().timeIntervalSince($0) / 86_400)) }
     }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
-    static func == (l: AppEntry, r: AppEntry) { l.id == r.id }
+    static func == (l: AppEntry, r: AppEntry) -> Bool { l.id == r.id }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, bundleID, bundlePath, version, bundleBytes, artifacts, installDate, isStale
@@ -168,7 +209,7 @@ enum MockProcesses {
 // MARK: Age buckets (§11)
 
 struct AgeBucket: Identifiable, Hashable {
-    let id = UUID()
+    var id: String { label }
     let label: String
     let bytes: Int64
     let files: Int
@@ -185,7 +226,7 @@ enum MockAge {
         AgeBucket(label: "6 – 12 months", bytes: 14 * GB, files: 98_445, color: .orange),
         AgeBucket(label: "1 – 2 years", bytes: 42 * GB, files: 250_881, color: .red),
         AgeBucket(label: "2+ years", bytes: 48 * GB, files: 310_204, color: .red),
-        AgeBucket(label: "Never modified", bytes: 8 * GB, files: 168_050, color: .gray),
+        AgeBucket(label: "Unknown date", bytes: 8 * GB, files: 168_050, color: .gray),
     ]
 }
 
@@ -233,11 +274,57 @@ enum MockSnapshots {
 
 // MARK: Cleanup queue (§22)
 
-struct CleanupItem: Identifiable, Hashable {
-    let id = UUID()
+struct CleanupItem: Identifiable, Hashable, Sendable {
+    enum SizeState: Equatable, Sendable { case provided, measuring, measured, lowerBound, unknown }
+    let id: UUID
     let source: String
     let path: String
-    let bytes: Int64
+    var bytes: Int64
+    var sizeState: SizeState
+
+    init(source: String, path: String, bytes: Int64, sizeState: SizeState = .provided) {
+        id = UUID()
+        self.source = source
+        self.path = path
+        self.bytes = max(0, bytes)
+        self.sizeState = bytes < 0 && sizeState == .provided ? .unknown : sizeState
+    }
+
+    var hasKnownSize: Bool {
+        switch sizeState {
+        case .provided, .measured, .lowerBound: return true
+        case .measuring, .unknown: return false
+        }
+    }
+
+    var sizeLabel: String {
+        switch sizeState {
+        case .measuring: return "Measuring…"
+        case .unknown: return "Size unknown"
+        case .lowerBound: return bytes > 0 ? "At least \(bytes.fileSizeString)" : "Size unknown (partial scan)"
+        case .provided, .measured: return bytes.fileSizeString
+        }
+    }
+
+    static func knownTotal(_ items: [CleanupItem]) -> Int64 {
+        items.filter(\.hasKnownSize).reduce(Int64(0)) { total, item in
+            let (sum, overflow) = total.addingReportingOverflow(max(0, item.bytes))
+            return overflow ? Int64.max : sum
+        }
+    }
+
+    static func sizeSummary(_ items: [CleanupItem]) -> String {
+        let pending = items.filter { $0.sizeState == .measuring }.count
+        let unknown = items.filter { $0.sizeState == .unknown || ($0.sizeState == .lowerBound && $0.bytes == 0) }.count
+        let partial = items.contains { $0.sizeState == .lowerBound && $0.bytes > 0 }
+        var parts: [String] = []
+        if items.contains(where: { $0.hasKnownSize && !($0.sizeState == .lowerBound && $0.bytes == 0) }) {
+            parts.append("\(partial ? "At least " : "")\(knownTotal(items).fileSizeString) known size")
+        }
+        if pending > 0 { parts.append("\(pending) measuring") }
+        if unknown > 0 { parts.append("\(unknown) size unknown") }
+        return parts.isEmpty ? "No measured size" : parts.joined(separator: " · ")
+    }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (l: CleanupItem, r: CleanupItem) -> Bool { l.id == r.id }
 }

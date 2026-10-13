@@ -13,35 +13,56 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
     /// Threshold of the last completed run — lets views avoid re-hashing
     /// the same data on every tab visit.
     @Published private(set) var lastRunMinBytes: Int64 = -1
+    @Published private(set) var lastRunScanID: UUID?
+    @Published private(set) var lastRunRecordCount = -1
     private var task: Task<Void, Never>?
+    @MainActor private var runID = UUID()
 
-    func find(in records: [ScannedRecord], minBytes: Int64) {
+    @MainActor
+    func find(in records: [ScannedRecord], minBytes: Int64, scanID: UUID? = nil) {
         task?.cancel()
+        let id = UUID()
+        runID = id
         task = Task { [weak self] in
             guard let self else { return }
-            await MainActor.run { self.isRunning = true; self.sets = []; self.progress = 0 }
+            await MainActor.run {
+                guard self.runID == id else { return }
+                self.isRunning = true; self.sets = []; self.progress = 0
+            }
             let found = await PerformanceMonitor.measure("DuplicateFinder.hash", threshold: 5) {
                 await Self.findAsync(records: records, minBytes: minBytes) { fraction in
-                    await MainActor.run { self.progress = fraction }
+                    await MainActor.run {
+                        guard self.runID == id else { return }
+                        self.progress = fraction
+                    }
                 }
             }
             PerformanceMonitor.checkMemory(label: "DuplicateFinder after hashing")
             guard !Task.isCancelled else {
-                await MainActor.run { self.isRunning = false }
+                await MainActor.run {
+                    guard self.runID == id else { return }
+                    self.isRunning = false
+                }
                 return
             }
             await MainActor.run {
+                guard self.runID == id else { return }
                 self.sets = found
                 self.isRunning = false
                 self.progress = 1
                 self.lastRunMinBytes = minBytes
+                self.lastRunScanID = scanID
+                self.lastRunRecordCount = records.count
             }
         }
     }
 
+    @MainActor
     func cancel() {
+        runID = UUID()
         task?.cancel()
         task = nil
+        isRunning = false
     }
 
     /// Async pipeline with hash-cache consult: full SHA-256 hits are keyed by
@@ -51,7 +72,7 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
     private static func findAsync(
         records: [ScannedRecord],
         minBytes: Int64,
-        report: (Double) async -> Void
+        report: @Sendable (Double) async -> Void
     ) async -> [DuplicateSet] {
         // Stage 1: size buckets (different sizes can't be duplicates).
         var buckets: [Int64: [ScannedRecord]] = [:]

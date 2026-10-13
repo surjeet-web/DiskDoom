@@ -16,6 +16,7 @@ struct DiskDoomLogo: View {
     let size: CGFloat
 
     @State private var sparksOn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         switch style {
@@ -88,9 +89,9 @@ struct DiskDoomLogo: View {
                     .frame(width: size * 0.012, height: size * 0.012)
                     .shadow(color: .orange.opacity(0.8), radius: 3)
                     .offset(sparkOffset(index: i))
-                    .opacity(sparksOn ? 1 : 0.6)
+                    .opacity(reduceMotion ? 0.8 : (sparksOn ? 1 : 0.6))
                     .animation(
-                        .easeInOut(duration: 1.5).repeatForever(autoreverses: true).delay(Double(i) * 0.25),
+                        reduceMotion ? nil : .easeInOut(duration: 1.5).repeatForever(autoreverses: true).delay(Double(i) * 0.25),
                         value: sparksOn)
             }
             Circle()
@@ -105,7 +106,7 @@ struct DiskDoomLogo: View {
             .stroke(Color.white.opacity(0.04), lineWidth: size * 0.01)
         }
         .frame(width: size, height: size)
-        .onAppear { sparksOn = true }
+        .onAppear { sparksOn = !reduceMotion }
         .accessibilityHidden(true)
     }
 

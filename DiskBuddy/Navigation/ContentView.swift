@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var accent: Color? {
         switch state.accentName {
@@ -20,14 +21,23 @@ struct ContentView: View {
     var body: some View {
         Group {
             if let step = state.onboardingStep {
-                switch step {
-                case .welcome: WelcomeView()
-                case .fullDiskAccess: FullDiskAccessView()
-                case .scanTarget: ScanTargetView()
+                Group {
+                    switch step {
+                    case .welcome: WelcomeView()
+                    case .fullDiskAccess: FullDiskAccessView()
+                    case .scanTarget: ScanTargetView()
+                    }
                 }
+                .id(step)
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 10)))
             } else {
                 MainWindowView()
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.985)))
             }
+        }
+        .animation(reduceMotion ? nil : DesignTokens.Motion.navigation, value: state.onboardingStep)
+        .sheet(isPresented: $state.showLicense) {
+            LicenseView().environmentObject(state.license)
         }
         .tint(accent)
     }

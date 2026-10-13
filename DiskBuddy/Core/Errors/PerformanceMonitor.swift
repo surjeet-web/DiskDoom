@@ -1,5 +1,6 @@
 import Foundation
 import os
+@preconcurrency import Darwin
 
 // MARK: - Performance logging for key operations.
 //
@@ -19,7 +20,7 @@ enum PerformanceMonitor {
     }
 
     /// Async variant.
-    static func measure<T>(_ name: String, threshold: TimeInterval = 1.0, block: () async throws -> T) async rethrows -> T {
+    static func measure<T>(_ name: String, threshold: TimeInterval = 1.0, block: @Sendable () async throws -> T) async rethrows -> T {
         let start = CFAbsoluteTimeGetCurrent()
         let result = try await block()
         log(name: name, elapsed: CFAbsoluteTimeGetCurrent() - start, threshold: threshold)

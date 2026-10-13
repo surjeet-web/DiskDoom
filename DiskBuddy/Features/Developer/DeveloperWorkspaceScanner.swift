@@ -35,7 +35,7 @@ struct DevProject: Identifiable {
     var isStale: Bool { daysSinceModified > 30 }
 }
 
-enum DevProjectType: String, CaseIterable, Identifiable {
+enum DevProjectType: String, CaseIterable, Identifiable, Sendable {
     case xcode = "Xcode"
     case xcodeWorkspace = "Xcode Workspace"
     case swiftPackage = "Swift Package"
@@ -180,6 +180,7 @@ final class DeveloperWorkspaceScanner: ObservableObject {
         task = Task { [weak self] in
             guard let self else { return }
             await MainActor.run {
+                guard !token.isCancelled else { return }
                 self.isScanning = true
                 self.statusText = "Searching for projects…"
             }
@@ -188,13 +189,10 @@ final class DeveloperWorkspaceScanner: ObservableObject {
                 Self.scanSync(searchPaths: paths, token: token)
             }.value
             guard !token.isCancelled else {
-                await MainActor.run {
-                    self.isScanning = false
-                    self.statusText = "Scan cancelled"
-                }
                 return
             }
             await MainActor.run {
+                guard !token.isCancelled else { return }
                 self.projects = found
                 self.isScanning = false
                 self.statusText = found.isEmpty
@@ -208,6 +206,8 @@ final class DeveloperWorkspaceScanner: ObservableObject {
         token.cancel()
         task?.cancel()
         task = nil
+        isScanning = false
+        statusText = "Scan cancelled"
     }
 
     // MARK: Marker detection (ordered by priority)
@@ -215,7 +215,7 @@ final class DeveloperWorkspaceScanner: ObservableObject {
     /// Marker entries that identify a project. Order = priority when several match.
     /// `.xcodeproj`, `.xcworkspace` and `.uproject` are name suffixes
     /// ("MyApp.xcodeproj"); all other markers are exact file names.
-    private static let markers: [(name: String, isSuffix: Bool, isDir: Bool, type: DevProjectType)] = [
+    nonisolated private static let markers: [(name: String, isSuffix: Bool, isDir: Bool, type: DevProjectType)] = [
         (".xcodeproj", true, true, .xcode),
         (".xcworkspace", true, true, .xcodeWorkspace),
         (".uproject", true, false, .unreal),
@@ -376,7 +376,7 @@ final class DeveloperWorkspaceScanner: ObservableObject {
     /// still running) starved the disk. They are still measured — reporting 0
     /// would hide the single largest reclaimable item in a dev project — but
     /// under a tight per-component deadline so one of them cannot dominate.
-    private static let heavySubtrees: Set<String> = [
+    nonisolated private static let heavySubtrees: Set<String> = [
         "node_modules", ".git", "target", "vendor", "Pods", "Carthage",
         "DerivedData", ".build", ".venv", "venv", "build", "dist",
     ]

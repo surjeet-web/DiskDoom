@@ -7,23 +7,21 @@ struct FolderInspectorPanel: View {
     let node: FolderNode
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
                 header
                 Divider()
-                LabeledContent("Size", value: node.sizeFormatted)
-                if node.percentageOfParent > 0 {
-                    LabeledContent("Share", value: String(format: "%.1f%%", node.percentageOfParent))
+                // WHY: unreadable (permission-denied) nodes carry a 0 size
+                // that is an absence of data — label it unknown, never "0 bytes".
+                LabeledContent("Size", value: node.sizeDisplay)
+                LabeledContent("Share", value: node.shareDisplay)
+                if node.isDirectory {
+                    LabeledContent("Contents", value: node.childCountDisplay)
+                    LabeledContent("Files", value: node.fileCountDisplay)
                 }
-                if let count = node.childCount {
-                    LabeledContent("Contents", value: "\(count) items")
-                }
-                if let count = node.fileCount {
-                    LabeledContent("Files", value: "\(count)")
-                }
-                if let modified = node.modified {
-                    LabeledContent("Modified", value: modified.formatted(date: .long, time: .shortened))
-                }
+                LabeledContent("Modified", value: node.modifiedDisplay)
+                Text(node.provenanceDisplay).font(.caption).foregroundStyle(.secondary)
                 Divider()
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Path")
@@ -57,6 +55,7 @@ struct FolderInspectorPanel: View {
             }
             .padding()
         }
+        }
     }
 
     private var header: some View {
@@ -85,6 +84,7 @@ struct FolderInspectorSheet: View {
     @EnvironmentObject var overlays: OverlayStack
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
         VStack(alignment: .leading, spacing: DesignTokens.Space.l) {
             ModalHeader(title: "Inspector", overlayID: "explorer-inspector") {
                 dismiss()
@@ -109,33 +109,40 @@ struct FolderInspectorSheet: View {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 9) {
                 GridRow {
                     Text("Size").foregroundStyle(.secondary)
-                    Text(node.sizeFormatted).fontWeight(.medium).monospacedDigit()
+                    // WHY: unreadable nodes never claim a measured "0 bytes".
+                    Text(node.sizeDisplay).fontWeight(.medium).monospacedDigit()
                 }
                 GridRow {
                     Text("Type").foregroundStyle(.secondary)
                     Text(node.isDirectory ? "Directory" : (node.fileExtension?.uppercased() ?? "File"))
                 }
-                if let count = node.childCount {
+                if node.isDirectory {
                     GridRow {
                         Text("Items").foregroundStyle(.secondary)
-                        Text("\(count)")
+                        Text(node.childCountDisplay)
                     }
                 }
-                if let count = node.fileCount {
+                if node.isDirectory {
                     GridRow {
                         Text("Files").foregroundStyle(.secondary)
-                        Text("\(count)")
-                    }
-                }
-                if let modified = node.modified {
-                    GridRow {
-                        Text("Modified").foregroundStyle(.secondary)
-                        Text(modified.formatted(date: .long, time: .shortened))
+                        Text(node.fileCountDisplay)
                     }
                 }
                 GridRow {
-                    Text("Share").foregroundStyle(.secondary)
-                    Text(String(format: "%.1f%% of parent", node.percentageOfParent))
+                    Text("Modified").foregroundStyle(.secondary)
+                    Text(node.modifiedDisplay)
+                }
+                if !node.isUnreadable {
+                    GridRow {
+                        Text("Share").foregroundStyle(.secondary)
+                        Text(node.shareDisplay)
+                    }
+                }
+                if node.isUnreadable {
+                    GridRow {
+                        Text("Note").foregroundStyle(.secondary)
+                        Text("Permission denied — contents not measured").foregroundStyle(.orange)
+                    }
                 }
                 if node.isSymlink {
                     GridRow {
@@ -150,6 +157,7 @@ struct FolderInspectorSheet: View {
                     }
                 }
             }
+            Text(node.provenanceDisplay).font(.caption).foregroundStyle(.secondary)
             Spacer()
             HStack {
                 Button("Open in Finder") { engine.openInFinder(node.path) }
@@ -165,5 +173,6 @@ struct FolderInspectorSheet: View {
         .frame(minWidth: 520, idealWidth: 520, maxWidth: 520, minHeight: 400)
         .onAppear { overlays.present("explorer-inspector") }
         .onDisappear { overlays.dismiss("explorer-inspector") }
+        }
     }
 }
