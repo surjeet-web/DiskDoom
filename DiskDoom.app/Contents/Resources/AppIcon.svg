@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="bgGrad" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0a0a12"/>
+    </radialGradient>
+    <radialGradient id="diskGrad" cx="45%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="#2a2a3e"/>
+      <stop offset="40%" stop-color="#1a1a2a"/>
+      <stop offset="100%" stop-color="#0d0d15"/>
+    </radialGradient>
+    <radialGradient id="glowGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff4444" stop-opacity="0.8"/>
+      <stop offset="40%" stop-color="#ff2200" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#ff0000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="crackGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff6600"/>
+      <stop offset="50%" stop-color="#ff2200"/>
+      <stop offset="100%" stop-color="#ff4400"/>
+    </linearGradient>
+    <linearGradient id="grooveGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#333344"/>
+      <stop offset="50%" stop-color="#1a1a2a"/>
+      <stop offset="100%" stop-color="#333344"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="12" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+    <filter id="redGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="crackGlowFilter" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="iconClip">
+      <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#iconClip)">
+    <rect width="1024" height="1024" fill="url(#bgGrad)"/>
+    <g opacity="0.04" stroke="#ffffff" stroke-width="0.5">
+      <line x1="512" y1="0" x2="512" y2="1024"/>
+      <line x1="0" y1="512" x2="1024" y2="512"/>
+      <line x1="150" y1="150" x2="874" y2="874"/>
+      <line x1="874" y1="150" x2="150" y2="874"/>
+    </g>
+    <ellipse cx="512" cy="480" rx="320" ry="320" fill="url(#glowGrad)" opacity="0.15"/>
+    <circle cx="512" cy="480" r="300" fill="url(#diskGrad)" filter="url(#shadow)"/>
+    <g stroke="url(#grooveGrad)" fill="none" opacity="0.6">
+      <circle cx="512" cy="480" r="280" stroke-width="1.5"/>
+      <circle cx="512" cy="480" r="250" stroke-width="1"/>
+      <circle cx="512" cy="480" r="220" stroke-width="1.5"/>
+      <circle cx="512" cy="480" r="190" stroke-width="1"/>
+      <circle cx="512" cy="480" r="160" stroke-width="1.5"/>
+      <circle cx="512" cy="480" r="130" stroke-width="1"/>
+      <circle cx="512" cy="480" r="100" stroke-width="1.5"/>
+      <circle cx="512" cy="480" r="70" stroke-width="1"/>
+    </g>
+    <g opacity="0.08">
+      <circle cx="512" cy="480" r="265" fill="none" stroke="#4488ff" stroke-width="8"/>
+      <circle cx="512" cy="480" r="235" fill="none" stroke="#4488ff" stroke-width="6"/>
+      <circle cx="512" cy="480" r="205" fill="none" stroke="#4488ff" stroke-width="8"/>
+      <circle cx="512" cy="480" r="175" fill="none" stroke="#4488ff" stroke-width="6"/>
+      <circle cx="512" cy="480" r="145" fill="none" stroke="#4488ff" stroke-width="8"/>
+    </g>
+    <circle cx="512" cy="480" r="45" fill="#0d0d15" stroke="#333344" stroke-width="2"/>
+    <circle cx="512" cy="480" r="20" fill="#1a1a2a" stroke="#444455" stroke-width="1.5"/>
+    <circle cx="512" cy="480" r="8" fill="#2a2a3e"/>
+    <g filter="url(#crackGlowFilter)">
+      <path d="M 680 280 L 640 320 L 620 340 L 580 370 L 560 400 L 540 430 L 530 450 L 520 470"
+            stroke="url(#crackGlow)" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <path d="M 680 280 L 670 310 L 645 330 L 625 355 L 600 380 L 570 410"
+            stroke="#ff4400" stroke-width="1.5" fill="none" opacity="0.8"/>
+    </g>
+    <g filter="url(#crackGlowFilter)">
+      <path d="M 320 680 L 350 660 L 380 640 L 410 610 L 440 580 L 460 550 L 480 520 L 495 500"
+            stroke="url(#crackGlow)" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <path d="M 320 680 L 340 665 L 365 645 L 390 620 L 420 590"
+            stroke="#ff4400" stroke-width="1.5" fill="none" opacity="0.6"/>
+    </g>
+    <g filter="url(#crackGlowFilter)">
+      <path d="M 640 320 L 660 340 L 670 365 L 665 390"
+            stroke="#ff4400" stroke-width="1.5" fill="none" opacity="0.5"/>
+    </g>
+    <g filter="url(#crackGlowFilter)">
+      <path d="M 380 640 L 360 650 L 340 660"
+            stroke="#ff4400" stroke-width="1.5" fill="none" opacity="0.4"/>
+    </g>
+    <g filter="url(#redGlow)">
+      <circle cx="660" cy="290" r="3" fill="#ff6600" opacity="0.9"/>
+      <circle cx="625" cy="345" r="2.5" fill="#ff4400" opacity="0.8"/>
+      <circle cx="565" cy="405" r="2" fill="#ff6600" opacity="0.7"/>
+      <circle cx="340" cy="665" r="3" fill="#ff6600" opacity="0.9"/>
+      <circle cx="375" cy="640" r="2.5" fill="#ff4400" opacity="0.8"/>
+      <circle cx="425" cy="585" r="2" fill="#ff6600" opacity="0.7"/>
+    </g>
+    <circle cx="512" cy="480" r="300" fill="none" stroke="#333344" stroke-width="3"/>
+    <circle cx="512" cy="480" r="297" fill="none" stroke="#222233" stroke-width="1" opacity="0.5"/>
+    <path d="M 280 380 A 240 240 0 0 1 580 220"
+          stroke="white" stroke-width="1.5" fill="none" opacity="0.06"/>
+    <text x="512" y="840" text-anchor="middle"
+          font-family="Helvetica Neue, Arial" font-weight="800" font-size="88" letter-spacing="16"
+          fill="#ffffff">DISK</text>
+    <text x="512" y="930" text-anchor="middle"
+          font-family="Helvetica Neue, Arial" font-weight="800" font-size="88" letter-spacing="16"
+          fill="#ff4400">DOOM</text>
+    <line x1="370" y1="950" x2="654" y2="950"
+          stroke="#ff4400" stroke-width="2" opacity="0.4"/>
+  </g>
+</svg>
