@@ -14,15 +14,15 @@
 		</data>
 		<key>Resources/Assets.car</key>
 		<data>
-		26HjzUlVdRUP0H933KNqikc/zPA=
+		el0l6PyIVPJkJACuI8KsMvFZE18=
 		</data>
 		<key>Resources/Debug.xcconfig</key>
 		<data>
-		Iun6hSMXAyIybPU/Etrbvr7Bx34=
+		SYixXqjw2yXYPcnOoPdaIegFQxs=
 		</data>
 		<key>Resources/Release.xcconfig</key>
 		<data>
-		Nt9ROD5Db01Gnnk7O7UsN2bMwCA=
+		nGfZ/DZbnsA/oJ7iycpvl1NcvWE=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -31,19 +31,19 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			PMUoFpSCe3+lBJnRs4IIW73kfG8=
+			VLRrHMv61KDYEohwuKtiW0XubiI=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"3cc5281694827b7fa50499d1b382085bbde47c6f" or cdhash H"34040964831d73132fe9e8f0d1d6a7f504c8133e"</string>
+			<string>cdhash H"54b46b1ccbfad4a0d8128870b8ab625b45ee6e22" or cdhash H"5ef9c950b4d39343cd0a6ecd3aee853937451d22"</string>
 		</dict>
 		<key>PlugIns/DiskBuddyWidget.appex</key>
 		<dict>
 			<key>cdhash</key>
 			<data>
-			kbSreHXfDhJ2Piao569Lmyq+/1o=
+			x6x6D6pLhHH7/gt5HIt7eRPIapM=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"91b4ab7875df0e12763e26a8e7af4b9b2abeff5a" or cdhash H"e83b076580d3e2bf6fa7ed0005174f81796bbff2"</string>
+			<string>cdhash H"c7ac7a0faa4b8471fbfe0b791c8b7b7913c86a93" or cdhash H"bad5745227ac77ff7ca44155d10bf2aa5b381468"</string>
 		</dict>
 		<key>Resources/AppIcon.icns</key>
 		<dict>
@@ -63,21 +63,21 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			VLe3FcVIgrQNMxiK3mdCBbLQ2HMypUr1Db8wSbmsxmU=
+			2oTFGEUzfqLD1qgAry3jPnL7GIbofvUhBHEQp5pOL4M=
 			</data>
 		</dict>
 		<key>Resources/Debug.xcconfig</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			YRODHdSxiLS+0POYntn0U8Y9UVde6LQLgvQeRd142To=
+			CKN60Hio2cTCiLNRX/xB2g90/U6qTd21hbZSsCTosFU=
 			</data>
 		</dict>
 		<key>Resources/Release.xcconfig</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			gVXI5A9rzDCA70/NcdnfNW9/MqYVbunhvhIu1XpqvPY=
+			Js/uUou3ifD2k//aybwhdcYQa4GayieI3sokTnYhLaQ=
 			</data>
 		</dict>
 	</dict>

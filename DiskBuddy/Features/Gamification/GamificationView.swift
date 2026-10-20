@@ -579,7 +579,6 @@ private struct AchievementCard: View {
 
 #Preview {
     GamificationView()
-        .environmentObject(AppState())
         .environmentObject(GamificationEngine(fileURL: URL(fileURLWithPath: "/tmp/diskbuddy-game-preview.json")))
         .frame(width: 1000, height: 760)
 }

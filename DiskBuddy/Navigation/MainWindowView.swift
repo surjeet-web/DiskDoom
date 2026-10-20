@@ -308,8 +308,16 @@ struct MainWindowView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
-                        ProgressView(value: gamification.progressToNextLevel)
-                            .tint(.purple)
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.secondary.opacity(0.18))
+                                Capsule()
+                                    .fill(Color.purple)
+                                    .frame(width: max(0, geometry.size.width * gamification.progressToNextLevel))
+                            }
+                        }
+                        .frame(height: 4)
                         Text("\(gamification.xpToNextLevel.formatted()) XP to next level")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)

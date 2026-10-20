@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import SwiftUI
 import Testing
 @testable import DiskDoom
 
@@ -300,6 +301,28 @@ struct GamificationTests {
         host.layoutSubtreeIfNeeded()
         #expect(host.frame.width == 1000)
         #expect(!engine.dailyQuests.isEmpty)
+    }
+
+    @MainActor
+    @Test func settingsGamificationSectionBuilds() throws {
+        let url = profileURL()
+        setenv("DISKBUDDY_GAMIFICATION_PATH", url.path, 1)
+        defer {
+            unsetenv("DISKBUDDY_GAMIFICATION_PATH")
+            try? FileManager.default.removeItem(at: url)
+        }
+        let state = AppState()
+        let host = NSHostingView(rootView: SettingsView()
+            .environmentObject(state)
+            .environmentObject(state.permissions)
+            .environmentObject(state.license)
+            .environmentObject(state.ignoreRules)
+            .environmentObject(state.priorities)
+            .environmentObject(state.gamification)
+            .environmentObject(MenuBarMonitor()))
+        host.frame = NSRect(x: 0, y: 0, width: 560, height: 600)
+        host.layoutSubtreeIfNeeded()
+        #expect(host.frame.width == 560)
     }
 
     @MainActor
