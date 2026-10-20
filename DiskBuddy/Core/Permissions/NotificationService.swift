@@ -12,6 +12,7 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
     static let categoryCleanup = "CLEANUP_DONE"
     static let categoryMonitor = "MONITOR_ALERT"
     static let categorySpaceAlert = "SPACE_ALERT"
+    static let categoryGamification = "GAMIFICATION"
     static let weeklyDigestID = "diskdoom-weekly-digest"
 
     private override init() {
@@ -78,6 +79,16 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
         post(title: "Cleanup complete",
               body: "Moved \(items) items (\(ByteFormatting.format(freed))) to Trash. Empty Trash to reclaim space.",
              category: Self.categoryCleanup)
+    }
+
+    func postGamification(title: String, body: String) {
+        post(title: title, body: body, category: Self.categoryGamification)
+    }
+
+    func postDuplicateAlert(newSets: Int, folderCount: Int, bytes: Int64) {
+        post(title: "New duplicates found",
+             body: "\(newSets) new set\(newSets == 1 ? "" : "s") across \(folderCount) watched folder\(folderCount == 1 ? "" : "s") · \(ByteFormatting.format(bytes)) potential.",
+             category: Self.categoryMonitor)
     }
 
     func postMonitorAlert(appName: String, bytes: Int64) {

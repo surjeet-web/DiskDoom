@@ -8,15 +8,19 @@ import AppKit
 final class AppState: ObservableObject {
     enum OnboardingStep { case welcome, fullDiskAccess, scanTarget }
     enum SidebarTab: String, CaseIterable {
-        case explore, duplicates, applications, monitor, snapshots
+        case explore, duplicates, similar, applications, monitor, snapshots
+        case dupMonitor
         case litterScore, forecast, simulator, devCaches, health, budgets, liveFeed
         case lifecycle, provenance, compression, containers, privacy, photos
         case smartClean, storage, folders
+        case progress
         case developer, pro3D, videoEditor
         var title: String {
             switch self {
             case .explore: return "Explore"
             case .duplicates: return "Duplicates"
+            case .similar: return "Similar Files"
+            case .dupMonitor: return "Duplicate Monitor"
             case .applications: return "Applications"
             case .monitor: return "Monitor"
             case .snapshots: return "Snapshots"
@@ -36,6 +40,7 @@ final class AppState: ObservableObject {
             case .smartClean: return "Smart Clean"
             case .storage: return "Storage"
             case .folders: return "Folders"
+            case .progress: return "Progress"
             case .developer: return "Dev Projects"
             case .pro3D: return "3D & Creative"
             case .videoEditor: return "Video Caches"
@@ -46,6 +51,8 @@ final class AppState: ObservableObject {
             switch self {
             case .explore: return "magnifyingglass"
             case .duplicates: return "doc.on.doc"
+            case .similar: return "photo.on.rectangle.angled"
+            case .dupMonitor: return "binoculars.fill"
             case .applications: return "app.badge"
             case .monitor: return "chart.line.uptrend.xyaxis"
             case .snapshots: return "camera"
@@ -65,6 +72,7 @@ final class AppState: ObservableObject {
             case .smartClean: return "sparkles"
             case .storage: return "internaldrive.fill"
             case .folders: return "folder.fill"
+            case .progress: return "trophy.fill"
             case .developer: return "hammer.fill"
             case .pro3D: return "cube.fill"
             case .videoEditor: return "film.fill"
@@ -72,7 +80,7 @@ final class AppState: ObservableObject {
         }
 
         static var primary: [SidebarTab] {
-            [.explore, .duplicates, .applications, .monitor, .snapshots]
+            [.explore, .duplicates, .similar, .applications, .monitor, .snapshots, .dupMonitor, .progress]
         }
 
         static var insights: [SidebarTab] {
@@ -157,6 +165,12 @@ final class AppState: ObservableObject {
     var license = LicenseStore()
     let scanner = RealScanEngine()
     let dupFinder = DuplicateFinder()
+    let similarFinder = SimilarPhotoFinder()
+    let photoDuplicates = PhotoDuplicatesEngine()
+    let duplicateMonitor = DuplicateMonitor()
+    let ignoreRules = IgnoreRules()
+    let priorities = ScanPriorityStore()
+    let gamification = GamificationEngine()
 
     // nil once onboarding has been completed (persisted — the wizard used to
     // replay on every launch because this was only ever set in memory).
@@ -214,6 +228,9 @@ final class AppState: ObservableObject {
     @Published var maxDepth = 0
     @Published var excludedPaths: [String] = []
     @Published var dupMinBytes: Int64 = 10_000_000
+    @Published var removalMethod = RemovalMethod.trash.rawValue
+    @Published var removalDestination = ""
+    @Published var removalOverwrite = false
     @Published var snapshotRetention = 30
     @Published var autoSaveSnapshots = true
     @Published var notifyOnScan = true
@@ -248,6 +265,13 @@ final class AppState: ObservableObject {
         snapshots = ScanStore.loadSnapshots(retention: snapshotRetention)
         if let raw = UserDefaults.standard.string(forKey: "sidebarTab"),
            let tab = SidebarTab(rawValue: raw) { sidebarTab = tab }
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-uiTestMainWindow") { onboardingStep = nil }
+        if let index = arguments.firstIndex(of: "-uiTestTab"),
+           index + 1 < arguments.count,
+           let tab = SidebarTab(rawValue: arguments[index + 1]) {
+            sidebarTab = tab
+        }
         if let raw = UserDefaults.standard.string(forKey: "exploreView"),
            let view = ExploreView(rawValue: raw) { exploreView = view }
         inspectorVisible = UserDefaults.standard.object(forKey: "inspectorVisible") as? Bool ?? true
@@ -341,7 +365,8 @@ final class AppState: ObservableObject {
         // Full-disk scans skip kernel/virtual mounts and other volumes by
         // default — they cost minutes and contain no cleanable user data.
         // (Volumes are scanned individually from their own targets.)
-        var excluded = excludedPaths.map { ($0 as NSString).expandingTildeInPath }
+        var excluded = (excludedPaths + ignoreRules.ignoredPaths)
+            .map { ($0 as NSString).expandingTildeInPath }
         if scanRootURL.path == "/" {
             excluded += ["/dev", "/Volumes", "/.Spotlight-V100", "/.fseventsd", "/System/Volumes/Update"]
             // Limited mode actually has to *do* something. Previously the flag
@@ -416,6 +441,7 @@ final class AppState: ObservableObject {
             if notifyOnScan {
                 notifications.postScanComplete(files: result.root.fileCount, bytes: result.root.sizeBytes, seconds: result.elapsed)
             }
+            gamification.record(GameEvent(kind: .scan, filesScanned: result.root.fileCount))
             if autoSaveSnapshots {
                 saveSnapshotFromCurrentScan(label: "Scan")
             }
@@ -712,6 +738,17 @@ final class AppState: ObservableObject {
         let (movedBytes, overflow) = freedBytes.addingReportingOverflow(result.trashedBytes)
         freedBytes = overflow ? Int64.max : movedBytes
         freedCount += result.trashedCount
+        // Attribute XP to the feature that staged each item, so duplicate and
+        // similar-photo achievements advance even when cleanup runs through
+        // the shared queue instead of a direct removal sheet.
+        let succeeded = selectedItems.filter { !failedPaths.contains($0.path) }
+        for (source, items) in Dictionary(grouping: succeeded, by: \.source) {
+            let kind = GamificationEngine.sourceEventKind(forCleanupSource: source)
+            let bytes = items.reduce(Int64(0)) { $0 + max(0, $1.bytes) }
+            if !items.isEmpty {
+                gamification.record(GameEvent(kind: kind, bytes: bytes, items: items.count))
+            }
+        }
         showDeleteConfirm = false
         if result.failures.isEmpty {
             showCleanup = !cleanupItems.isEmpty
@@ -764,6 +801,9 @@ final class AppState: ObservableObject {
         defaults.set(maxDepth, forKey: "setMaxDepth")
         defaults.set(excludedPaths, forKey: "setExcludedPaths")
         defaults.set(dupMinBytes, forKey: "setDupMinBytes")
+        defaults.set(removalMethod, forKey: "setRemovalMethod")
+        defaults.set(removalDestination, forKey: "setRemovalDestination")
+        defaults.set(removalOverwrite, forKey: "setRemovalOverwrite")
         defaults.set(snapshotRetention, forKey: "setSnapshotRetention")
         defaults.set(autoSaveSnapshots, forKey: "setAutoSaveSnapshots")
         defaults.set(notifyOnScan, forKey: "setNotifyOnScan")
@@ -784,6 +824,9 @@ final class AppState: ObservableObject {
             maxDepth = defaults.integer(forKey: "setMaxDepth")
             excludedPaths = defaults.stringArray(forKey: "setExcludedPaths") ?? []
             dupMinBytes = Int64(defaults.integer(forKey: "setDupMinBytes") == 0 ? 10_000_000 : defaults.integer(forKey: "setDupMinBytes"))
+            removalMethod = defaults.string(forKey: "setRemovalMethod") ?? RemovalMethod.trash.rawValue
+            removalDestination = defaults.string(forKey: "setRemovalDestination") ?? ""
+            removalOverwrite = defaults.object(forKey: "setRemovalOverwrite") as? Bool ?? false
             snapshotRetention = defaults.integer(forKey: "setSnapshotRetention") == 0 ? 30 : defaults.integer(forKey: "setSnapshotRetention")
             autoSaveSnapshots = defaults.object(forKey: "setAutoSaveSnapshots") as? Bool ?? true
             notifyOnScan = defaults.bool(forKey: "setNotifyOnScan")

@@ -4,6 +4,7 @@ import SwiftUI
 
 struct PhotoLibraryView: View {
     @EnvironmentObject var analyzer: PhotoLibraryAnalyzer
+    @State private var showDuplicates = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,17 +15,30 @@ struct PhotoLibraryView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Check Access") { analyzer.checkAccess() }
-                    .buttonStyle(.borderedProminent)
+                Picker("Photo view", selection: $showDuplicates) {
+                    Text("Library").tag(false)
+                    Text("Duplicates & Similar").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+                if !showDuplicates {
+                    Button("Check Access") { analyzer.checkAccess() }
+                        .buttonStyle(.borderedProminent)
+                }
             }
             .padding(DesignTokens.Space.m)
-            HStack(spacing: DesignTokens.Space.s) {
-                TextField("Custom library path (optional)…", text: $analyzer.customPath)
-                    .textFieldStyle(.roundedBorder)
+            if !showDuplicates {
+                HStack(spacing: DesignTokens.Space.s) {
+                    TextField("Custom library path (optional)…", text: $analyzer.customPath)
+                        .textFieldStyle(.roundedBorder)
+                }
+                .padding(.horizontal, DesignTokens.Space.m)
+                .padding(.bottom, DesignTokens.Space.s)
             }
-            .padding(.horizontal, DesignTokens.Space.m)
-            .padding(.bottom, DesignTokens.Space.s)
             Divider()
+            if showDuplicates {
+                PhotoDuplicatesView()
+            } else {
             switch analyzer.access {
             case .unchecked:
                 EmptyState(symbol: "photo.on.rectangle.angled", title: "Analyze your Photos library", message: "DiskDoom checks access first — nothing is fabricated when the library can't be read.", actionTitle: "Check Access", action: { analyzer.checkAccess() })
@@ -86,6 +100,7 @@ struct PhotoLibraryView: View {
                         .padding()
                     }
                 }
+            }
             }
         }
         .onAppear { analyzer.checkAccess() }

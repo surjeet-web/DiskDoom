@@ -6,12 +6,18 @@ struct MenuBarExtraPanel: View {
     @EnvironmentObject var monitor: MenuBarMonitor
     @EnvironmentObject var state: AppState
     @EnvironmentObject var forecastEngine: DiskForecastEngine
+    @EnvironmentObject var gamification: GamificationEngine
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
             spaceGauge
                 .padding(DesignTokens.Space.m)
+
+            Divider()
+            gamificationRow
+                .padding(.horizontal, DesignTokens.Space.m)
+                .padding(.vertical, DesignTokens.Space.s)
 
             Divider()
             quickStatsRow
@@ -104,6 +110,41 @@ struct MenuBarExtraPanel: View {
                 .background(gradeColor(grade).opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
             }
         }
+    }
+
+    // MARK: - Gamification
+
+    private var gamificationRow: some View {
+        Button {
+            openApp(tab: .progress)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "trophy.fill")
+                    .foregroundStyle(.yellow)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text("Level \(gamification.level)")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(gamification.title)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: gamification.progressToNextLevel)
+                        .tint(.purple)
+                        .frame(width: 150)
+                }
+                Spacer()
+                Label("\(gamification.streak)", systemImage: "flame.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.orange)
+                Text("\(gamification.xpToNextLevel) XP")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open Progress — level, quests and achievements")
     }
 
     // MARK: - Quick stats
@@ -268,6 +309,17 @@ struct MenuBarExtraPanel: View {
                 }
                 MenuBarButton(icon: "folder.fill", label: "Explorer", color: .cyan) {
                     openApp(tab: .folders)
+                }
+            }
+            HStack(spacing: DesignTokens.Space.s) {
+                MenuBarButton(icon: "trophy.fill", label: "Progress", color: .yellow) {
+                    openApp(tab: .progress)
+                }
+                MenuBarButton(icon: "photo.on.rectangle", label: "Similar", color: .orange) {
+                    openApp(tab: .similar)
+                }
+                MenuBarButton(icon: "binoculars.fill", label: "Monitor", color: .indigo) {
+                    openApp(tab: .dupMonitor)
                 }
             }
         }

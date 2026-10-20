@@ -28,8 +28,12 @@ private struct GeneralSettingsTab: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var permissions: PermissionsService
     @EnvironmentObject var license: LicenseStore
+    @EnvironmentObject var gamification: GamificationEngine
+    @AppStorage("showXPRewards") private var showXPRewards = true
+    @AppStorage("gamificationNotifications") private var gamificationNotifications = true
     @State private var loginEnabled = false
     @State private var notifyStatus: UNAuthorizationStatus = .notDetermined
+    @State private var confirmGameReset = false
 
     private func saved<T>(_ keyPath: ReferenceWritableKeyPath<AppState, T>) -> Binding<T> {
         Binding(
@@ -61,6 +65,53 @@ private struct GeneralSettingsTab: View {
                     .foregroundStyle(license.canClean ? .green : .orange)
                 Button(license.isLicensed ? "Manage License" : "Activate License") {
                     state.showLicense = true
+                }
+            }
+            Section("Removal") {
+                Picker("Default method", selection: saved(\.removalMethod)) {
+                    ForEach(RemovalMethod.allCases) { method in
+                        Text(method.title).tag(method.rawValue)
+                    }
+                }
+                if state.removalMethod == RemovalMethod.move.rawValue {
+                    HStack {
+                        TextField("Destination folder", text: saved(\.removalDestination))
+                        Button("Choose…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            panel.allowsMultipleSelection = false
+                            panel.prompt = "Choose Destination"
+                            if panel.runModal() == .OK, let url = panel.url {
+                                state.removalDestination = url.path
+                                state.saveSettings()
+                            }
+                        }
+                    }
+                    Toggle("Overwrite files with the same name", isOn: saved(\.removalOverwrite))
+                }
+                Text((RemovalMethod(rawValue: state.removalMethod) ?? .trash).detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Gamification") {
+                HStack {
+                    Label("Level \(gamification.level) · \(gamification.title)", systemImage: "trophy.fill")
+                    Spacer()
+                    Text("\(gamification.xp.formatted()) XP")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Toggle("Show XP reward toasts", isOn: $showXPRewards)
+                Toggle("Notify for achievements and level-ups", isOn: $gamificationNotifications)
+                Text("Progress comes from real scans and confirmed cleanup. Quests reset daily and weekly; achievements award bonus XP.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Open Progress") { state.sidebarTab = .progress }
+                    Spacer()
+                    Button("Reset Progress…", role: .destructive) { confirmGameReset = true }
+                        .font(.caption)
                 }
             }
             Section("Permissions") {
@@ -100,6 +151,15 @@ private struct GeneralSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding()
+        .confirmationDialog("Reset gamification progress?", isPresented: $confirmGameReset,
+                            titleVisibility: .visible) {
+            Button("Reset XP, quests and achievements", role: .destructive) {
+                gamification.resetProgress()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This only clears the local progress profile. Files, scans and cleanup history are untouched.")
+        }
         .onAppear {
             loginEnabled = SMAppService.mainApp.status == .enabled
             UNUserNotificationCenter.current().getNotificationSettings {
@@ -132,7 +192,12 @@ private struct GeneralSettingsTab: View {
 
 private struct ScanningSettingsTab: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var ignoreRules: IgnoreRules
+    @EnvironmentObject var priorities: ScanPriorityStore
     @State private var newPath = ""
+    @State private var newExtension = ""
+    @State private var newFolderPriority = ""
+    @State private var newTypePriority = ""
 
     private func saved<T>(_ keyPath: ReferenceWritableKeyPath<AppState, T>) -> Binding<T> {
         Binding(
@@ -206,6 +271,140 @@ private struct ScanningSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Ignore List") {
+                ForEach(ignoreRules.ignoredPaths, id: \.self) { path in
+                    HStack {
+                        Text(path).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button {
+                            ignoreRules.removePath(path)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    TextField("Ignore folder or file…", text: $newPath)
+                    Button("Add") {
+                        let trimmed = newPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            ignoreRules.addPath(trimmed)
+                            newPath = ""
+                        }
+                    }
+                }
+                ForEach(ignoreRules.ignoredExtensions, id: \.self) { ext in
+                    HStack {
+                        Text(".\(ext)").font(.caption.monospaced())
+                        Spacer()
+                        Button {
+                            ignoreRules.removeExtension(ext)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    TextField("Ignore extension (e.g. dmg)…", text: $newExtension)
+                    Button("Add") {
+                        let trimmed = newExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            ignoreRules.addExtension(trimmed)
+                            newExtension = ""
+                        }
+                    }
+                }
+                Text("Ignored folders are excluded from scans. Ignored extensions are skipped by duplicate and similar searches.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Folder Priority") {
+                ForEach(Array(priorities.folderPaths.enumerated()), id: \.element) { index, folder in
+                    HStack {
+                        Text("\(index + 1). \(folder)")
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button {
+                            priorities.moveFolder(from: index, to: index - 1)
+                        } label: {
+                            Image(systemName: "arrow.up")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(index == 0)
+                        Button {
+                            priorities.moveFolder(from: index, to: index + 1)
+                        } label: {
+                            Image(systemName: "arrow.down")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(index == priorities.folderPaths.count - 1)
+                        Button {
+                            priorities.removeFolder(folder)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    Button("Add Folder…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = true
+                        panel.canChooseFiles = false
+                        panel.allowsMultipleSelection = false
+                        panel.prompt = "Prioritize"
+                        if panel.runModal() == .OK, let url = panel.url {
+                            priorities.addFolder(url.path)
+                        }
+                    }
+                    Spacer()
+                    Text("Higher folders are preferred when choosing a copy to keep.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("File Type Priority") {
+                ForEach(Array(priorities.fileExtensions.enumerated()), id: \.element) { index, ext in
+                    HStack {
+                        Text("\(index + 1). .\(ext)").font(.caption.monospaced())
+                        Spacer()
+                        Button {
+                            priorities.moveExtension(from: index, to: index - 1)
+                        } label: {
+                            Image(systemName: "arrow.up")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(index == 0)
+                        Button {
+                            priorities.moveExtension(from: index, to: index + 1)
+                        } label: {
+                            Image(systemName: "arrow.down")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(index == priorities.fileExtensions.count - 1)
+                        Button {
+                            priorities.removeExtension(ext)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    TextField("Preferred extension…", text: $newTypePriority)
+                    Button("Add") {
+                        let trimmed = newTypePriority.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            priorities.addExtension(trimmed)
+                            newTypePriority = ""
+                        }
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -235,8 +434,12 @@ private struct AboutTab: View {
 }
 
 #Preview {
-    SettingsView()
-        .environmentObject(AppState())
-        .environmentObject(PermissionsService())
-        .environmentObject(LicenseStore())
+    let state = AppState()
+    return SettingsView()
+        .environmentObject(state)
+        .environmentObject(state.permissions)
+        .environmentObject(state.license)
+        .environmentObject(state.ignoreRules)
+        .environmentObject(state.priorities)
+        .environmentObject(state.gamification)
 }

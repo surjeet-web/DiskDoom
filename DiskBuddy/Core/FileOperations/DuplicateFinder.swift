@@ -65,6 +65,11 @@ final class DuplicateFinder: ObservableObject, @unchecked Sendable {
         isRunning = false
     }
 
+    /// Reusable, UI-free entry point for the duplicate monitor and tests.
+    nonisolated static func findSets(records: [ScannedRecord], minBytes: Int64) async -> [DuplicateSet] {
+        await findAsync(records: records, minBytes: minBytes) { _ in }
+    }
+
     /// Async pipeline with hash-cache consult: full SHA-256 hits are keyed by
     /// path + size + mtime, so second scans skip unchanged files (10–50x).
     /// Unchanged files keep their cache rows; replaced files miss and re-hash

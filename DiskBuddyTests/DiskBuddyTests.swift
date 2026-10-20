@@ -511,7 +511,7 @@ struct ForecastEngineTests {
         #expect(engine.forecast == nil)
         #expect(engine.alerts.contains { $0.severity == .info || !$0.title.isEmpty })
 
-        engine.recordSnapshot(totalCapacity: 500 * GB, usedSize: 100 * GB, freeSize: 400 * GB, source: .launch)
+        engine.recordSnapshot(totalCapacity: 500 * GB, usedSize: 100 * GB, freeSize: 400 * GB, source: .launch, measurementSource: StorageCapacityReader.source)
         await engine.compute()
         #expect(engine.forecast == nil, "a single snapshot can't define a trend")
     }
@@ -525,10 +525,10 @@ struct ForecastEngineTests {
         engine.seedHistory([
             UsageSnapshot(id: UUID(), timestamp: Date().addingTimeInterval(-10 * 86_400),
                           totalCapacity: 500 * GB, usedSize: 300 * GB, freeSize: 200 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: Date(),
                           totalCapacity: 500 * GB, usedSize: 200 * GB, freeSize: 300 * GB,
-                          categoryBreakdown: [:], source: .scan),
+                          categoryBreakdown: [:], source: .scan, measurementSource: StorageCapacityReader.source),
         ])
         await engine.compute()
 
@@ -549,13 +549,13 @@ struct ForecastEngineTests {
         engine.seedHistory([
             UsageSnapshot(id: UUID(), timestamp: Date().addingTimeInterval(-8 * 86_400),
                           totalCapacity: 500 * GB, usedSize: 350 * GB, freeSize: 150 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: Date().addingTimeInterval(-4 * 86_400),
                           totalCapacity: 500 * GB, usedSize: 400 * GB, freeSize: 100 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: Date(),
                           totalCapacity: 500 * GB, usedSize: 450 * GB, freeSize: 50 * GB,
-                          categoryBreakdown: [:], source: .scan),
+                          categoryBreakdown: [:], source: .scan, measurementSource: StorageCapacityReader.source),
         ])
         await engine.compute()
 
@@ -577,10 +577,10 @@ struct ForecastEngineTests {
         engine.seedHistory([
             UsageSnapshot(id: UUID(), timestamp: now.addingTimeInterval(-240),
                           totalCapacity: 500 * GB, usedSize: 400 * GB, freeSize: 100 * GB,
-                          categoryBreakdown: [:], source: .scan),
+                          categoryBreakdown: [:], source: .scan, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: now,
                           totalCapacity: 500 * GB, usedSize: 401 * GB, freeSize: 99 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
         ])
         await engine.compute()
 
@@ -604,13 +604,13 @@ struct ForecastEngineTests {
         engine.seedHistory([
             UsageSnapshot(id: UUID(), timestamp: now.addingTimeInterval(-9 * 86_400),
                           totalCapacity: 2_000 * GB, usedSize: 1_000 * GB, freeSize: 1_000 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: now.addingTimeInterval(-8 * 86_400),
                           totalCapacity: 2_000 * GB, usedSize: 1_400 * GB, freeSize: 600 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: now,
                           totalCapacity: 2_000 * GB, usedSize: 1_800 * GB, freeSize: 200 * GB,
-                          categoryBreakdown: [:], source: .scan),
+                          categoryBreakdown: [:], source: .scan, measurementSource: StorageCapacityReader.source),
         ])
         await engine.compute()
 
@@ -624,8 +624,8 @@ struct ForecastEngineTests {
         let engine = makeEngine(dir: &dir)
         defer { try? FileManager.default.removeItem(at: dir!); DiskForecastEngine.directoryOverride = nil }
 
-        engine.recordSnapshot(totalCapacity: 500 * GB, usedSize: 100 * GB, freeSize: 400 * GB, source: .launch)
-        engine.recordSnapshot(totalCapacity: 500 * GB, usedSize: 120 * GB, freeSize: 380 * GB, source: .scan)
+        engine.recordSnapshot(totalCapacity: 500 * GB, usedSize: 100 * GB, freeSize: 400 * GB, source: .launch, measurementSource: StorageCapacityReader.source)
+        engine.recordSnapshot(totalCapacity: 500 * GB, usedSize: 120 * GB, freeSize: 380 * GB, source: .scan, measurementSource: StorageCapacityReader.source)
         #expect(engine.history.count == 1, "launch + scan within the same hour collapse into one entry")
         #expect(engine.history[0].usedSize == 120 * GB, "the later entry (scan) wins")
     }
@@ -637,7 +637,7 @@ struct ForecastEngineTests {
 
         engine.recordSnapshot(
             totalCapacity: 500 * GB, usedSize: 100 * GB, freeSize: 400 * GB,
-            categoryBreakdown: ["caches": 10 * GB, "logs": 2 * GB], source: .launch)
+            categoryBreakdown: ["caches": 10 * GB, "logs": 2 * GB], source: .launch, measurementSource: StorageCapacityReader.source)
         // Force distinct timestamps: mutate the last entry via a new record
         // after moving the first one back in time is not public API — instead
         // record with an hour gap by manipulating engine history is not
@@ -645,13 +645,13 @@ struct ForecastEngineTests {
         engine.seedHistory([
             UsageSnapshot(id: UUID(), timestamp: Date().addingTimeInterval(-8 * 86_400),
                           totalCapacity: 500 * GB, usedSize: 100 * GB, freeSize: 400 * GB,
-                          categoryBreakdown: ["caches": 10 * GB, "logs": 2 * GB], source: .launch),
+                          categoryBreakdown: ["caches": 10 * GB, "logs": 2 * GB], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: Date().addingTimeInterval(-4 * 86_400),
                           totalCapacity: 500 * GB, usedSize: 114 * GB, freeSize: 386 * GB,
-                          categoryBreakdown: ["caches": 14 * GB, "logs": 2 * GB], source: .launch),
+                          categoryBreakdown: ["caches": 14 * GB, "logs": 2 * GB], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: Date(),
                           totalCapacity: 500 * GB, usedSize: 128 * GB, freeSize: 372 * GB,
-                          categoryBreakdown: ["caches": 18 * GB, "logs": 2 * GB], source: .scan),
+                          categoryBreakdown: ["caches": 18 * GB, "logs": 2 * GB], source: .scan, measurementSource: StorageCapacityReader.source),
         ])
         await engine.compute()
 
@@ -671,13 +671,13 @@ struct ForecastEngineTests {
         engine.seedHistory([
             UsageSnapshot(id: UUID(), timestamp: Date().addingTimeInterval(-8 * 86_400),
                           totalCapacity: 100 * GB, usedSize: 40 * GB, freeSize: 60 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: Date().addingTimeInterval(-4 * 86_400),
                           totalCapacity: 100 * GB, usedSize: 45 * GB, freeSize: 55 * GB,
-                          categoryBreakdown: [:], source: .launch),
+                          categoryBreakdown: [:], source: .launch, measurementSource: StorageCapacityReader.source),
             UsageSnapshot(id: UUID(), timestamp: Date(),
                           totalCapacity: 100 * GB, usedSize: 50 * GB, freeSize: 50 * GB,
-                          categoryBreakdown: [:], source: .scan),
+                          categoryBreakdown: [:], source: .scan, measurementSource: StorageCapacityReader.source),
         ])
         await engine.compute()
         #expect(engine.forecast?.daysUntilFull == 40, "50 GB free at +1.25 GB/day = 40 days")

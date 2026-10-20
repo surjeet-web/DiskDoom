@@ -8,6 +8,8 @@ struct MainWindowView: View {
     @EnvironmentObject var topology: DiskTopologyService
     @EnvironmentObject var coordinator: LaunchCoordinator
     @EnvironmentObject var inventory: AppInventoryService
+    @EnvironmentObject var gamification: GamificationEngine
+    @AppStorage("showXPRewards") private var showXPRewards = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dropTargeted = false
     @State private var observedScanRootID: UUID?
@@ -169,6 +171,29 @@ struct MainWindowView: View {
         .sheet(item: $state.quickLookNode) { node in
             QuickLookSheet(node: node).environmentObject(state)
         }
+        .overlay(alignment: .top) {
+            if let celebration = gamification.currentCelebration {
+                CelebrationBanner(celebration: celebration) {
+                    gamification.dismissCurrentCelebration()
+                }
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                .zIndex(20)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if showXPRewards, let reward = gamification.currentReward {
+                XPRewardToast(reward: reward) {
+                    gamification.dismissCurrentReward()
+                }
+                .padding(DesignTokens.Space.l)
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .zIndex(19)
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86),
+                   value: gamification.currentReward)
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85),
+                   value: gamification.currentCelebration)
         .animation(reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.base), value: state.banner)
         .onAppear {
             state.startupCheck()
@@ -256,15 +281,42 @@ struct MainWindowView: View {
                         HStack {
                             Text(tab.title)
                             Spacer()
-                            Text("⌘\(shortcut)")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
+                            if shortcut > 0 {
+                                Text("⌘\(shortcut)")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     } icon: {
                         Image(systemName: tab.symbol)
                     }
                     .tag(tab)
                 }
+            }
+            Section("Progress") {
+                Button {
+                    state.sidebarTab = .progress
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "trophy.fill")
+                                .foregroundStyle(.yellow)
+                            Text("Level \(gamification.level) · \(gamification.title)")
+                                .font(.caption.weight(.medium))
+                            Spacer()
+                            Label("\(gamification.streak)", systemImage: "flame.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                        ProgressView(value: gamification.progressToNextLevel)
+                            .tint(.purple)
+                        Text("\(gamification.xpToNextLevel.formatted()) XP to next level")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             Section("Insights") {
                 ForEach(AppState.SidebarTab.insights, id: \.self) { tab in
@@ -371,6 +423,12 @@ struct MainWindowView: View {
             ApplicationsView()
         } else if state.sidebarTab == .folders {
             FolderExplorerView()
+        } else if state.sidebarTab == .progress {
+            GamificationView()
+        } else if state.sidebarTab == .dupMonitor {
+            DuplicateMonitorView()
+        } else if state.sidebarTab == .similar && state.scanPhase != .scanning && state.scanRoot == nil {
+            SimilarFilesView()
         } else if state.scanPhase == .scanning {
             ScanProgressView()
         } else if state.scanPhase == .failed {
@@ -474,6 +532,9 @@ struct MainWindowView: View {
                     .id(state.scanRoot?.id)
                 }
             case .duplicates: DuplicatesView()
+            case .similar: SimilarFilesView()
+            case .dupMonitor: DuplicateMonitorView()
+            case .progress: GamificationView()
             case .applications: ApplicationsView()
             case .monitor: MonitorView()
             case .snapshots: SnapshotsView()

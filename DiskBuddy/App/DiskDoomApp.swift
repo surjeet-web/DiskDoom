@@ -4,6 +4,7 @@ import WidgetKit
 @main
 struct DiskDoomApp: App {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
 
     @StateObject private var state = AppState()
     @StateObject private var recommendationsEngine = RecommendationsEngine()
@@ -52,6 +53,12 @@ struct DiskDoomApp: App {
                     .environmentObject(state.notifications)
                     .environmentObject(state.license)
                     .environmentObject(state.dupFinder)
+                    .environmentObject(state.similarFinder)
+                    .environmentObject(state.photoDuplicates)
+                    .environmentObject(state.duplicateMonitor)
+                    .environmentObject(state.ignoreRules)
+                    .environmentObject(state.priorities)
+                    .environmentObject(state.gamification)
                 .environmentObject(topology)
                 .environmentObject(coordinator)
                 .environmentObject(overlays)
@@ -71,8 +78,14 @@ struct DiskDoomApp: App {
                         await coordinator.runAll()
                     }
                     .task {
+                        // Gamification runs from the scene, not from the main
+                        // window, so onboarding and the menu bar cannot starve
+                        // the daily check-in or quest rollover.
+                        state.gamification.start()
+                        state.gamification.checkIn()
                         // Menu bar monitor: live free space + threshold alerts.
                         menuBarMonitor.startMonitoring(notifications: state.notifications)
+                        state.duplicateMonitor.start()
                         // Weekly digest: keep the schedule in sync with the setting.
                         // NOTE: must be the shared instance — constructing a
                         // throwaway NotificationService re-points (and then
@@ -154,6 +167,11 @@ struct DiskDoomApp: App {
             }
         }
         .defaultSize(width: 1100, height: 700)
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            state.gamification.refresh()
+            state.gamification.checkIn()
+        }
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About DiskDoom") { openWindow(id: "about") }
@@ -208,6 +226,9 @@ struct DiskDoomApp: App {
                     .keyboardShortcut("1", modifiers: .command)
                 Button("Duplicates") { state.sidebarTab = .duplicates }
                     .keyboardShortcut("2", modifiers: .command)
+                Button("Similar Files") { state.sidebarTab = .similar }
+                Button("Duplicate Monitor") { state.sidebarTab = .dupMonitor }
+                Button("Progress") { state.sidebarTab = .progress }
                 Button("Applications") { state.sidebarTab = .applications }
                     .keyboardShortcut("3", modifiers: .command)
                 Button("Monitor") { state.sidebarTab = .monitor }
@@ -254,6 +275,9 @@ struct DiskDoomApp: App {
                 .environmentObject(state)
                 .environmentObject(state.permissions)
                 .environmentObject(state.license)
+                .environmentObject(state.ignoreRules)
+                .environmentObject(state.priorities)
+                .environmentObject(state.gamification)
                 .environmentObject(menuBarMonitor)
         }
 
@@ -266,6 +290,7 @@ struct DiskDoomApp: App {
                 .environmentObject(inventory)
                 .environmentObject(litterEngine)
                 .environmentObject(healthEngine)
+                .environmentObject(state.gamification)
         } label: {
             MenuBarLabel(monitor: menuBarMonitor)
         }
