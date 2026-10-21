@@ -31,7 +31,7 @@ struct DuplicateMonitorView: View {
                 .font(.title2)
                 .foregroundStyle(.purple)
                 .frame(width: 44, height: 44)
-                .background(.purple.opacity(0.1), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+                .background { MetalSurface(depth: 2, accent: DesignTokens.Palette.violet) }
             VStack(alignment: .leading, spacing: 2) {
                 Text("Duplicate Monitor").font(.title2.weight(.semibold))
                 Text("Watch folders for new duplicates and remind you to clean up.")
@@ -43,18 +43,19 @@ struct DuplicateMonitorView: View {
             } label: {
                 Label(monitor.isChecking ? "Checking…" : "Check Now", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PlateButtonStyle(primary: true))
             .disabled(monitor.isChecking || monitor.folders.isEmpty)
         }
-        .padding(DesignTokens.Space.m)
+        .padding(24)
+        .background { MetalSurface(family: .canopy, flatSide: .top, accent: DesignTokens.Palette.violet) }
     }
 
     private var summaryCards: some View {
-        HStack(spacing: DesignTokens.Space.m) {
-            statCard("Watched folders", "\(monitor.folders.count)", "folder.fill", .blue)
-            statCard("Known sets", "\(monitor.lastTotalSets)", "doc.on.doc.fill", .purple)
-            statCard("New last check", "\(monitor.lastNewSets)", "sparkles", .orange)
-            statCard("Potential", monitor.lastPotentialBytes.fileSizeString, "internaldrive", .green)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: DesignTokens.Space.m)], spacing: DesignTokens.Space.m) {
+            statCard("Watched folders", "\(monitor.folders.count)", "folder.fill", DesignTokens.Palette.cyan)
+            statCard("Known sets", "\(monitor.lastTotalSets)", "doc.on.doc.fill", DesignTokens.Palette.violet)
+            statCard("New last check", "\(monitor.lastNewSets)", "sparkles", DesignTokens.Palette.orange)
+            statCard("Potential", monitor.lastPotentialBytes.fileSizeString, "internaldrive", DesignTokens.Palette.teal)
         }
     }
 
@@ -68,8 +69,7 @@ struct DuplicateMonitorView: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.plate, flatSide: .bottom, accent: color)
     }
 
     private var scheduleCard: some View {
@@ -94,8 +94,7 @@ struct DuplicateMonitorView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.tiered, flatSide: .right, accent: DesignTokens.Palette.violet)
     }
 
     private var foldersCard: some View {
@@ -139,8 +138,7 @@ struct DuplicateMonitorView: View {
                 }
             }
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.well, flatSide: .right, accent: DesignTokens.Palette.cyan)
     }
 
     private var reminderCard: some View {
@@ -164,8 +162,7 @@ struct DuplicateMonitorView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.boot, flatSide: .bottom, accent: DesignTokens.Palette.orange)
     }
 
     private func addFolders() {

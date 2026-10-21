@@ -45,6 +45,9 @@ struct MenuBarExtraPanel: View {
                 .padding(.vertical, DesignTokens.Space.s)
         }
         .frame(width: 320)
+        .padding(16)
+        .background { MetalSurface(family: .well, flatSide: .top, depth: 6, accent: DesignTokens.Palette.orange) }
+        .preferredColorScheme(.dark)
         .onAppear {
             monitor.pollDiskSpace()
             monitor.refreshQuickFolderStats(force: false)

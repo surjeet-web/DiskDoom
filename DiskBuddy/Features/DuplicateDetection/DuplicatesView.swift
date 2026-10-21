@@ -146,7 +146,7 @@ struct DuplicatesView: View {
                            message: "Try another filename or show sets already staged.",
                            actionTitle: "Clear filters", action: { search = ""; hideStaged = false })
             } else {
-                HSplitView {
+                AdaptivePreviewSplit(showsPreview: showPreview) {
                     ScrollView {
                         if layoutMode == .grid {
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: DesignTokens.Space.m)],
@@ -177,11 +177,8 @@ struct DuplicatesView: View {
                             .padding(DesignTokens.Space.m)
                         }
                     }
-                    .frame(minWidth: 420)
-                    if showPreview {
-                        QuickLookPane(path: selectedFile?.path)
-                            .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
-                    }
+                } preview: {
+                    QuickLookPane(path: selectedFile?.path)
                 }
                 Divider()
                 footer
@@ -213,7 +210,7 @@ struct DuplicatesView: View {
                 .font(.title2)
                 .foregroundStyle(.blue)
                 .frame(width: 44, height: 44)
-                .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+                .background { MetalSurface(depth: 2, accent: DesignTokens.Palette.cyan) }
             VStack(alignment: .leading, spacing: 2) {
                 Text("Duplicates").font(.title2.weight(.semibold))
                 Text("Verified matches · choose one copy to keep per set")
@@ -243,10 +240,19 @@ struct DuplicatesView: View {
             .fixedSize()
             .help("Scan a common folder for duplicates")
         }
-        .padding(DesignTokens.Space.m)
+        .padding(24)
+        .background { MetalSurface(family: .canopy, flatSide: .top, accent: DesignTokens.Palette.cyan) }
     }
 
     private var controls: some View {
+        ScrollView(.horizontal) {
+            controlContent
+        }
+        .padding(24)
+        .background { MetalSurface(family: .well, flatSide: .top, depth: 2) }
+    }
+
+    private var controlContent: some View {
         VStack(spacing: DesignTokens.Space.s) {
             HStack(spacing: DesignTokens.Space.m) {
                 Picker("Minimum file size", selection: $state.dupMinBytes) {
@@ -322,11 +328,17 @@ struct DuplicatesView: View {
             }
         }
         .font(.caption)
-        .padding(.horizontal, DesignTokens.Space.m)
-        .padding(.vertical, DesignTokens.Space.s)
     }
 
     private var footer: some View {
+        ScrollView(.horizontal) {
+            footerContent
+        }
+        .padding(24)
+        .background { MetalSurface(family: .boot, flatSide: .bottom, accent: DesignTokens.Palette.orange) }
+    }
+
+    private var footerContent: some View {
         HStack(spacing: DesignTokens.Space.m) {
             Text("\(visibleSets.count) of \(finder.sets.count) sets shown")
                 .font(.caption).foregroundStyle(.secondary)
@@ -374,7 +386,6 @@ struct DuplicatesView: View {
             .buttonStyle(.bordered)
             .help("Stage redundant copies from the visible sets; nothing moves to Trash until you confirm in the queue")
         }
-        .padding(DesignTokens.Space.m)
     }
 
     private func isStaged(_ path: String) -> Bool {
@@ -628,8 +639,7 @@ private struct DuplicateSetCard: View {
                 }
             }
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.tiered, flatSide: .right, accent: DesignTokens.Palette.cyan)
     }
 }
 

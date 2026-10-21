@@ -48,13 +48,10 @@ struct SimilarFilesView: View {
             Divider()
             controls
             Divider()
-            HSplitView {
+            AdaptivePreviewSplit(showsPreview: showPreview) {
                 results
-                    .frame(minWidth: 420)
-                if showPreview {
-                    QuickLookPane(path: selected?.path)
-                        .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
-                }
+            } preview: {
+                QuickLookPane(path: selected?.path)
             }
             Divider()
             footer
@@ -84,7 +81,7 @@ struct SimilarFilesView: View {
                 .font(.title2)
                 .foregroundStyle(.pink)
                 .frame(width: 44, height: 44)
-                .background(.pink.opacity(0.1), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+                .background { MetalSurface(depth: 2, accent: DesignTokens.Palette.violet) }
             VStack(alignment: .leading, spacing: 2) {
                 Text("Similar Files").font(.title2.weight(.semibold))
                 Text("Perceptual matches · keep the best shot, review the rest")
@@ -102,21 +99,30 @@ struct SimilarFilesView: View {
             } label: {
                 Label("Scan Folder…", systemImage: "folder.badge.plus")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(PlateButtonStyle())
             Button {
                 finder.scan(records: state.records, ignoreRules: ignoreRules)
             } label: {
                 Label("Scan Current Results", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PlateButtonStyle(primary: true))
             .disabled(state.records.isEmpty || finder.isRunning)
         }
-        .padding(DesignTokens.Space.m)
+        .padding(24)
+        .background { MetalSurface(family: .canopy, flatSide: .top, accent: DesignTokens.Palette.violet) }
     }
 
     // MARK: Controls
 
     private var controls: some View {
+        ScrollView(.horizontal) {
+            controlContent
+        }
+        .padding(24)
+        .background { MetalSurface(family: .well, flatSide: .top, depth: 2, accent: DesignTokens.Palette.violet) }
+    }
+
+    private var controlContent: some View {
         VStack(spacing: DesignTokens.Space.s) {
             HStack(spacing: DesignTokens.Space.m) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -198,8 +204,6 @@ struct SimilarFilesView: View {
                 }
             }
         }
-        .padding(.horizontal, DesignTokens.Space.m)
-        .padding(.vertical, DesignTokens.Space.s)
     }
 
     // MARK: Results
@@ -271,7 +275,8 @@ struct SimilarFilesView: View {
             .buttonStyle(.borderedProminent)
             .disabled(marked.isEmpty)
         }
-        .padding(DesignTokens.Space.m)
+        .padding(24)
+        .background { MetalSurface(family: .boot, flatSide: .bottom, accent: DesignTokens.Palette.orange) }
     }
 
     // MARK: Mark rules
@@ -504,8 +509,7 @@ private struct SimilarGroupCard: View {
                 }
             }
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.tiered, flatSide: .right, accent: DesignTokens.Palette.violet)
     }
 }
 

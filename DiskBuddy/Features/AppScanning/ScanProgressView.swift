@@ -18,7 +18,9 @@ struct ScanProgressView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.xl) {
             Spacer()
-            ScanAnimationView(size: 150)
+            ScanAnimationView(size: 128)
+                .padding(28)
+                .background { MetalSurface(family: .well, flatSide: .bottom, depth: 8, accent: DesignTokens.Palette.orange) }
             Text("Scanning \(state.scanTargetName)")
                 .font(.headline)
             Text(state.scanPath.isEmpty ? "Preparing scan…" : state.scanPath)
@@ -26,12 +28,9 @@ struct ScanProgressView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            ProgressView(value: state.scanProgress) {
-                Text("\(Int(state.scanProgress * 100))%")
-                    .font(.caption.monospacedDigit())
-            }
+            ProgressView("Measuring files · total not yet known")
             .progressViewStyle(.linear)
-            .frame(width: 420)
+            .frame(maxWidth: 420)
             HStack(spacing: DesignTokens.Space.xl) {
                 Text("\(state.scanFiles.formatted()) files")
                     .font(.caption.monospacedDigit())
@@ -46,8 +45,9 @@ struct ScanProgressView: View {
                 }
             }
             .foregroundStyle(.secondary)
+            .padding(.horizontal, 24)
             Button("Cancel", action: state.cancelScan)
-                .buttonStyle(.bordered)
+                .buttonStyle(PlateButtonStyle())
                 .keyboardShortcut(.cancelAction)
             Spacer()
         }

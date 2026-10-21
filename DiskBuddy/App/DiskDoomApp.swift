@@ -166,7 +166,8 @@ struct DiskDoomApp: App {
                 }
             }
         }
-        .defaultSize(width: 1100, height: 700)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1440, height: 1000)
         .onChange(of: scenePhase) { phase in
             guard phase == .active else { return }
             state.gamification.refresh()
@@ -178,7 +179,11 @@ struct DiskDoomApp: App {
             }
             // §37 menu bar structure (prototype subset).
             CommandGroup(replacing: .newItem) {
-                Button("New Scan") { state.startScan() }
+                Button("New Window") { openWindow(id: "main") }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button(state.scanPhase == .scanning ? "Cancel Scan" : "New Scan") {
+                    state.scanPhase == .scanning ? state.cancelScan() : state.startScan()
+                }
                     .keyboardShortcut("r", modifiers: .command)
                 Button("Save Snapshot") {
                     state.saveSnapshotFromCurrentScan(label: "Manual")
@@ -187,17 +192,23 @@ struct DiskDoomApp: App {
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(state.scanRoot == nil)
             }
-            CommandMenu("Edit") {
+            CommandGroup(after: .pasteboard) {
+                Button("Search Everywhere") {
+                    NotificationCenter.default.post(name: .diskDoomSearchRequested, object: nil)
+                }.keyboardShortcut("k", modifiers: .command)
+                Button("Find") {
+                    NotificationCenter.default.post(name: .diskDoomSearchRequested, object: nil)
+                }.keyboardShortcut("f", modifiers: .command)
                 Button("Copy Path") {
                     if let node = state.selectedNode {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(node.path, forType: .string)
                     }
                 }
-                .keyboardShortcut("c", modifiers: .command)
+                .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(state.selectedNode == nil)
             }
-            CommandMenu("View") {
+            CommandGroup(after: .sidebar) {
                 Button(state.inspectorVisible ? "Hide Inspector" : "Show Inspector") {
                     state.inspectorVisible.toggle()
                 }
@@ -255,17 +266,23 @@ struct DiskDoomApp: App {
                 Button("Privacy") { state.sidebarTab = .privacy }
                 Button("Photos") { state.sidebarTab = .photos }
                 Button("Smart Clean") { state.sidebarTab = .smartClean }
-                Button("Storage") { state.sidebarTab = .storage }
+                Button("Storage Map") { state.sidebarTab = .storage }
                 Button("Folders") { state.sidebarTab = .folders }
+                Divider()
+                Button("Dev Projects") { state.sidebarTab = .developer }
+                Button("3D & Creative") { state.sidebarTab = .pro3D }
+                Button("Video Caches") { state.sidebarTab = .videoEditor }
             }
         }
 
         Window("About DiskDoom", id: "about") {
             AboutView()
-                .background(Color(red: 0.06, green: 0.06, blue: 0.1))
+                .industrialPanel(.well, flatSide: .bottom, accent: DesignTokens.Palette.orange)
+                .background(DesignTokens.Palette.void)
+                .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 360, height: 520)
+        .defaultSize(width: 420, height: 580)
 
         Settings {
             // NOTE: the Settings scene does NOT inherit the WindowGroup

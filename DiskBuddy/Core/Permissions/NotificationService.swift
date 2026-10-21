@@ -38,6 +38,9 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
     static let shared = NotificationService()
 
     func post(title: String, body: String, category: String) {
+        Task { @MainActor in
+            ActivityCenter.shared.record(title: title, body: body, category: category)
+        }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -69,8 +72,8 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
         }
     }
 
-    func postScanComplete(files: Int, bytes: Int64, seconds: Double) {
-        post(title: "Scan complete",
+    func postScanComplete(files: Int, bytes: Int64, seconds: Double, partial: Bool = false) {
+        post(title: partial ? "Partial scan finished" : "Scan complete",
              body: "\(files.formatted()) files · \(ByteFormatting.format(bytes)) · \(String(format: "%.1f", seconds))s",
              category: Self.categoryScan)
     }
@@ -101,16 +104,9 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
 
     /// Alert when free space crosses a threshold (menu bar monitor drives this).
     func sendDiskSpaceAlert(title: String, freeSpace: Int64, freePercent: Double) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = "Only \(ByteFormatting.format(freeSpace)) free (\(String(format: "%.0f", freePercent))%). Open DiskDoom to clean up."
-        content.sound = .default
-        content.categoryIdentifier = Self.categorySpaceAlert
-        let request = UNNotificationRequest(
-            identifier: "\(Self.categorySpaceAlert)-\(Int(Date().timeIntervalSince1970))",
-            content: content,
-            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))
-        UNUserNotificationCenter.current().add(request)
+        post(title: title,
+             body: "Only \(ByteFormatting.format(freeSpace)) free (\(String(format: "%.0f", freePercent))%). Review storage before cleaning.",
+             category: Self.categorySpaceAlert)
     }
 
     /// Weekly digest, Monday 9 AM local time, repeating.
@@ -141,7 +137,14 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        // Foreground feedback belongs to the in-app banner/history, not a
+        // duplicate OS banner and sound above the same operation.
+        if notification.request.identifier == Self.weeklyDigestID {
+            let title = notification.request.content.title
+            let body = notification.request.content.body
+            Task { @MainActor in ActivityCenter.shared.record(title: title, body: body, category: Self.categorySpaceAlert) }
+        }
+        completionHandler([])
     }
 
     // Tapping a notification (or its Open DiskDoom action) focuses the app.
@@ -150,9 +153,16 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        let category = response.notification.request.content.categoryIdentifier
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
+            NotificationCenter.default.post(name: .diskDoomNotificationOpened,
+                                            object: category)
         }
         completionHandler()
     }
+}
+
+extension Notification.Name {
+    static let diskDoomNotificationOpened = Notification.Name("DiskDoom.notificationOpened")
 }

@@ -20,20 +20,24 @@ struct FolderTreemap: View {
                 ForEach(rectangles, id: \.node.id) { item in
                     let node = item.node
                     let rect = item.rect
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(deterministicColor(for: node, opacity: hoveredNodeID == node.id ? 0.95 : 0.72))
+                    Button { onSelect(node) } label: {
+                    Rectangle()
+                        .fill(deterministicColor(for: node, opacity: hoveredNodeID == node.id ? 0.65 : 0.4))
+                        .overlay { Rectangle().stroke(deterministicColor(for: node, opacity: 0.9)) }
                         .frame(width: max(0, rect.width - 2), height: max(0, rect.height - 2))
+                    }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(node.name), \(node.sizeDisplay)")
                         .position(x: rect.midX, y: rect.midY)
-                        .onTapGesture { onSelect(node) }
                         .onHover { hoveredNodeID = $0 ? node.id : nil }
                     if rect.width > 70 && rect.height > 38 {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(node.name)
-                                .font(.system(size: min(13, max(9, rect.height / 4)), weight: .medium))
-                                .lineLimit(max(1, Int(rect.height / 16)))
+                                .font(.system(size: 13, weight: .medium))
+                                .lineLimit(1)
                                 .foregroundStyle(.white)
                              Text(node.sizeDisplay)
-                                .font(.system(size: min(11, max(8, rect.height / 5))))
+                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.82))
                         }
                         .frame(width: max(1, rect.width - 16), height: max(1, rect.height - 12), alignment: .center)
@@ -42,14 +46,14 @@ struct FolderTreemap: View {
                     }
                 }
             }
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+            .background(DesignTokens.Palette.app)
         }
     }
 
     private func deterministicColor(for node: FolderNode, opacity: Double) -> Color {
-        let hue = Double(stableHash(node.path) % 360) / 360
-        return Color(hue: hue, saturation: 0.55, brightness: 0.65, opacity: opacity)
+        let palette: [Color] = [.categoryApplications, .categoryUserData, .categorySystem,
+                                .categoryCaches, .categoryDuplicates, .categoryOther]
+        return palette[Int(stableHash(node.path) % UInt64(palette.count))].opacity(opacity)
     }
 
     private func stableHash(_ string: String) -> UInt64 {

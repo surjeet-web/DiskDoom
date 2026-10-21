@@ -111,7 +111,9 @@ struct WhatIfView: View {
             .padding(.leading, DesignTokens.Space.s)
             Spacer()
         }
-        .padding(DesignTokens.Space.m)
+        .padding(24)
+        .background { MetalSurface(family: .tiered, flatSide: .top, accent: DesignTokens.Palette.teal) }
+        .padding(6)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: simulator.selectedIDs)
     }
 

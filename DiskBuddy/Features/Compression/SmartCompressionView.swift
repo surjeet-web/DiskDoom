@@ -57,7 +57,10 @@ struct SmartCompressionView: View {
                     VStack { Text(ByteFormatting.format(engine.totalSaving)).font(.title.weight(.bold)).foregroundStyle(.green).monospacedDigit(); Text("Est. Saving").font(.caption).foregroundStyle(.secondary) }
                     VStack { Text(supportsCompression ? "In-place" : "Unavailable").font(.title3.weight(.bold)); Text("Method").font(.caption).foregroundStyle(.secondary) }
                 }
-                .padding(DesignTokens.Space.m)
+                .frame(maxWidth: .infinity)
+                .padding(24)
+                .background { MetalSurface(family: .plate, flatSide: .right, accent: DesignTokens.Palette.teal) }
+                .padding(6)
                 Divider()
                 List(engine.files) { file in
                     HStack {

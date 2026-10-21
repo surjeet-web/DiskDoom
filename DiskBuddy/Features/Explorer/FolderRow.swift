@@ -8,9 +8,8 @@ struct FolderRow: View {
     let onTap: () -> Void
     let onInspect: () -> Void
 
-    @State private var isHovered = false
-
     var body: some View {
+        HStack(spacing: 4) {
         Button(action: onTap) {
             HStack(spacing: DesignTokens.Space.m) {
                 Text("\(rank)")
@@ -82,23 +81,18 @@ struct FolderRow: View {
                         .font(.callout.weight(.medium).monospacedDigit())
                         .frame(width: 82, alignment: .trailing)
                 }
-                if isHovered {
-                    Button(action: onInspect) {
-                        Image(systemName: "info.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.opacity)
-                } else {
-                    Color.clear.frame(width: 16, height: 16)
-                }
             }
             .padding(.vertical, 4)
             .padding(.horizontal, DesignTokens.Space.s)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        Button(action: onInspect) {
+            Image(systemName: "info.circle").frame(width: 32, height: 36)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Inspect \(node.name)")
+        }
         .help("\(node.path)\n\(node.provenanceDisplay)\n\(node.shareDisplay)")
     }
 

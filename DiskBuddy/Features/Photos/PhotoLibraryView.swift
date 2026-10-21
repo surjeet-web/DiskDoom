@@ -66,10 +66,13 @@ struct PhotoLibraryView: View {
                 } else if let stats = analyzer.stats {
                     ScrollView {
                         VStack(spacing: DesignTokens.Space.l) {
-                            HStack(spacing: DesignTokens.Space.xl) {
-                                PhotoStatCard(label: "Total Size", value: ByteFormatting.format(stats.totalBytes), color: .blue)
-                                PhotoStatCard(label: "Photos", value: "\(stats.photoCount.formatted())", color: .green)
-                                PhotoStatCard(label: "Videos", value: "\(stats.videoCount.formatted())", color: .purple)
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: DesignTokens.Space.m) {
+                                    photoMetrics(stats)
+                                }
+                                VStack(spacing: DesignTokens.Space.m) {
+                                    photoMetrics(stats)
+                                }
                             }
                             VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
                                 Text("Library Structure").font(.headline)
@@ -77,6 +80,7 @@ struct PhotoLibraryView: View {
                                 LibrarySizeRow(label: "Resources (renders, thumbnails)", bytes: stats.resourcesBytes, total: stats.totalBytes, color: .purple)
                                 LibrarySizeRow(label: "Database", bytes: stats.databaseBytes, total: stats.totalBytes, color: .gray)
                             }
+                            .industrialPanel(.well, flatSide: .right, accent: DesignTokens.Palette.violet)
                             VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
                                 Text("Reclaimable").font(.headline)
                                 if stats.duplicateSets > 0 {
@@ -86,7 +90,7 @@ struct PhotoLibraryView: View {
                                             .font(.callout)
                                     }
                                     .padding(DesignTokens.Space.s)
-                                    .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
+                                    .background(.orange.opacity(0.08))
                                 } else {
                                     Text("Duplicate detection inside the Photos library isn't available — DiskBuddy won't guess. Use the Duplicates tab for byte-identical files found by scanning, or manage duplicates in the Photos app.")
                                         .font(.callout)
@@ -94,8 +98,10 @@ struct PhotoLibraryView: View {
                                         .frame(maxWidth: 520, alignment: .leading)
                                 }
                                 Text("Recently Deleted can only be emptied inside the Photos app — DiskDoom never deletes it silently.")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                     .font(.caption).foregroundStyle(.secondary)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .industrialPanel(.boot, flatSide: .left, accent: DesignTokens.Palette.orange)
                         }
                         .padding()
                     }
@@ -105,6 +111,13 @@ struct PhotoLibraryView: View {
         }
         .onAppear { analyzer.checkAccess() }
         .onDisappear { analyzer.cancel() }
+    }
+
+    @ViewBuilder
+    private func photoMetrics(_ stats: PhotoLibraryStats) -> some View {
+        PhotoStatCard(label: "Total Size", value: ByteFormatting.format(stats.totalBytes), color: .blue)
+        PhotoStatCard(label: "Photos", value: "\(stats.photoCount.formatted())", color: .green)
+        PhotoStatCard(label: "Videos", value: "\(stats.videoCount.formatted())", color: .purple)
     }
 }
 
@@ -116,11 +129,14 @@ private struct PhotoStatCard: View {
     var body: some View {
         VStack(spacing: 4) {
             Text(value).font(.title3.weight(.bold)).foregroundStyle(color).monospacedDigit()
+                .fixedSize(horizontal: true, vertical: false)
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .padding(24)
+        .background {
+            MetalSurface(family: .plate, flatSide: .bottom, accent: color)
+        }
     }
 }
 

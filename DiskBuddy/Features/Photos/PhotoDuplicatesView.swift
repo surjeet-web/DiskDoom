@@ -59,7 +59,7 @@ struct PhotoDuplicatesView: View {
                 .font(.title2)
                 .foregroundStyle(.blue)
                 .frame(width: 44, height: 44)
-                .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+                .background { MetalSurface(depth: 2, accent: DesignTokens.Palette.teal) }
             VStack(alignment: .leading, spacing: 2) {
                 Text("Photos Library Duplicates").font(.title2.weight(.semibold))
                 Text("Exact and similar photos, cleaned through PhotoKit")
@@ -76,7 +76,8 @@ struct PhotoDuplicatesView: View {
                 .buttonStyle(.bordered)
             }
         }
-        .padding(DesignTokens.Space.m)
+        .padding(24)
+        .background { MetalSurface(family: .canopy, flatSide: .top, accent: DesignTokens.Palette.teal) }
     }
 
     private var accessDenied: some View {
@@ -110,6 +111,22 @@ struct PhotoDuplicatesView: View {
     // MARK: Controls
 
     private var controls: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
+            ScrollView(.horizontal) {
+                controlContent
+            }
+            if !engine.phase.isEmpty {
+                Text(engine.phase)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(24)
+        .background { MetalSurface(family: .well, flatSide: .top, depth: 2, accent: DesignTokens.Palette.teal) }
+    }
+
+    private var controlContent: some View {
         HStack(spacing: DesignTokens.Space.m) {
             Picker("Mode", selection: $mode) {
                 ForEach(PhotoScanMode.allCases) { option in
@@ -149,18 +166,6 @@ struct PhotoDuplicatesView: View {
                     Label("Scan Photos", systemImage: "sparkle.magnifyingglass")
                 }
                 .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(.horizontal, DesignTokens.Space.m)
-        .padding(.vertical, DesignTokens.Space.s)
-        .overlay(alignment: .bottom) {
-            if !engine.phase.isEmpty {
-                Text(engine.phase)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, DesignTokens.Space.m)
-                    .padding(.bottom, 2)
             }
         }
     }
@@ -244,8 +249,7 @@ struct PhotoDuplicatesView: View {
                 .padding(.vertical, 3)
             }
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.tiered, flatSide: .right, accent: group.kind == .exact ? DesignTokens.Palette.teal : DesignTokens.Palette.violet)
     }
 
     private var footer: some View {
@@ -266,7 +270,8 @@ struct PhotoDuplicatesView: View {
             .buttonStyle(.borderedProminent)
             .disabled(marked.isEmpty || isRemoving)
         }
-        .padding(DesignTokens.Space.m)
+        .padding(24)
+        .background { MetalSurface(family: .boot, flatSide: .bottom, accent: DesignTokens.Palette.orange) }
     }
 
     private func selectAllButOne(in group: PhotoDuplicateGroup) {

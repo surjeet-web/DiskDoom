@@ -80,6 +80,8 @@ struct FileProvenanceView: View {
                                 .font(.caption.monospaced()).foregroundStyle(.secondary)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .industrialPanel(.well, flatSide: .right, accent: DesignTokens.Palette.violet)
                     .padding()
                 }
             } else {
@@ -105,7 +107,7 @@ struct FileProvenanceView: View {
         }
         .padding(DesignTokens.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .background(.quaternary.opacity(0.15))
     }
 }
 

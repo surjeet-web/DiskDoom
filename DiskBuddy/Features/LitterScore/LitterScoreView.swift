@@ -128,8 +128,10 @@ private struct LitterScoreCard: View {
                 Spacer()
             }
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .padding(24)
+        .background {
+            MetalSurface(family: .plate, flatSide: .right, accent: DesignTokens.Palette.orange)
+        }
     }
 }
 

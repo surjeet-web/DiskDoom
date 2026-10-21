@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("listRowHeight") private var rowHeight = 40.0
 
     private var accent: Color? {
         switch state.accentName {
@@ -14,7 +15,7 @@ struct ContentView: View {
         case "orange": return .orange
         case "pink": return .pink
         case "red": return .red
-        default: return nil
+        default: return DesignTokens.Palette.orange
         }
     }
 
@@ -28,6 +29,7 @@ struct ContentView: View {
                     case .scanTarget: ScanTargetView()
                     }
                 }
+                .industrialPanel(.tiered, flatSide: .bottom, accent: DesignTokens.Palette.orange)
                 .id(step)
                 .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 10)))
             } else {
@@ -40,6 +42,9 @@ struct ContentView: View {
             LicenseView().environmentObject(state.license)
         }
         .tint(accent)
+        .environment(\.defaultMinListRowHeight, CGFloat(rowHeight))
+        .preferredColorScheme(.dark)
+        .background(DesignTokens.Palette.void)
     }
 }
 

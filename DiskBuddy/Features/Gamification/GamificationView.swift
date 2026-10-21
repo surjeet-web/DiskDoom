@@ -74,7 +74,16 @@ struct GamificationView: View {
     // MARK: Hero
 
     private var hero: some View {
-        HStack(spacing: DesignTokens.Space.xl) {
+        ViewThatFits(in: .horizontal) {
+            heroContent(layout: AnyLayout(HStackLayout(spacing: DesignTokens.Space.xl)))
+            heroContent(layout: AnyLayout(VStackLayout(alignment: .leading, spacing: DesignTokens.Space.l)))
+        }
+        .foregroundStyle(.white)
+        .industrialPanel(.canopy, flatSide: .top, accent: DesignTokens.Palette.violet)
+    }
+
+    private func heroContent(layout: AnyLayout) -> some View {
+        layout {
             levelRing
             VStack(alignment: .leading, spacing: DesignTokens.Space.s) {
                 HStack(spacing: DesignTokens.Space.s) {
@@ -115,21 +124,10 @@ struct GamificationView: View {
                           systemImage: game.hasCheckedInToday ? "checkmark.circle.fill" : "hand.wave.fill")
                         .font(.caption.weight(.semibold))
                 }
-                .buttonStyle(.bordered)
-                .tint(.white)
+                .buttonStyle(PlateButtonStyle(primary: true))
                 .disabled(game.hasCheckedInToday)
             }
         }
-        .foregroundStyle(.white)
-        .padding(DesignTokens.Space.xl)
-        .background(
-            LinearGradient(colors: [Color(hex: 0x3A1C71), Color(hex: 0x6A38C2), Color(hex: 0x2B5876)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing),
-            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.xl)
-                .stroke(.white.opacity(0.15), lineWidth: 1))
-        .shadow(color: Color(hex: 0x3A1C71).opacity(0.35), radius: 18, y: 8)
     }
 
     private var levelRing: some View {
@@ -160,12 +158,12 @@ struct GamificationView: View {
     }
 
     private var stats: some View {
-        HStack(spacing: DesignTokens.Space.m) {
-            stat("Scans", "\(game.profile.totalScans.formatted())", "magnifyingglass", .blue)
-            stat("Items cleaned", "\(game.profile.totalItems.formatted())", "trash.fill", .orange)
-            stat("Duplicates", "\(game.profile.totalDuplicateItems.formatted())", "doc.on.doc.fill", .purple)
-            stat("Photos", "\(game.profile.totalPhotoItems.formatted())", "photo.stack.fill", .pink)
-            stat("Best streak", "\(game.bestStreak)d", "flame.fill", .red)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: DesignTokens.Space.m)], spacing: DesignTokens.Space.m) {
+            stat("Scans", "\(game.profile.totalScans.formatted())", "magnifyingglass", DesignTokens.Palette.cyan)
+            stat("Items cleaned", "\(game.profile.totalItems.formatted())", "trash.fill", DesignTokens.Palette.orange)
+            stat("Duplicates", "\(game.profile.totalDuplicateItems.formatted())", "doc.on.doc.fill", DesignTokens.Palette.violet)
+            stat("Photos", "\(game.profile.totalPhotoItems.formatted())", "photo.stack.fill", DesignTokens.Palette.teal)
+            stat("Best streak", "\(game.bestStreak)d", "flame.fill", DesignTokens.Palette.orange)
         }
     }
 
@@ -178,8 +176,7 @@ struct GamificationView: View {
                 .font(.title3.weight(.semibold).monospacedDigit())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.plate, flatSide: .bottom, accent: color)
     }
 
     // MARK: Streak calendar + rank path
@@ -231,8 +228,7 @@ struct GamificationView: View {
                 }
             }
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.well, flatSide: .right, accent: DesignTokens.Palette.orange)
     }
 
     private var rankLadder: some View {
@@ -276,8 +272,7 @@ struct GamificationView: View {
                 }
             }
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .industrialPanel(.tiered, flatSide: .right, accent: DesignTokens.Palette.violet)
     }
 
     // MARK: Quests
@@ -303,9 +298,11 @@ struct GamificationView: View {
                     QuestRow(quest: quest) {
                         game.claim(quest)
                     }
+                    Divider()
                 }
             }
         }
+        .industrialPanel(.well, flatSide: .right, accent: DesignTokens.Palette.cyan)
     }
 
     private func resetLabel(quests: [GameQuest], fallback: String) -> String {
@@ -358,8 +355,7 @@ struct GamificationView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.green)
                 }
-                .padding(DesignTokens.Space.m)
-                .background(.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+                .industrialPanel(.canopy, flatSide: .left, accent: DesignTokens.Palette.violet)
             }
             if sortedAchievements.isEmpty {
                 Text(achievementFilter == .unlocked
@@ -422,6 +418,7 @@ struct GamificationView: View {
                 }
             }
         }
+        .industrialPanel(.well, flatSide: .right, accent: DesignTokens.Palette.teal)
     }
 
     private var footer: some View {
@@ -492,8 +489,8 @@ private struct QuestRow: View {
             }
             .frame(width: 90, alignment: .trailing)
         }
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .padding(.vertical, 16)
+        .padding(.horizontal, 8)
         .opacity(quest.claimed ? 0.65 : 1)
     }
 }
@@ -566,14 +563,10 @@ private struct AchievementCard: View {
                 }
             }
         }
-        .padding(DesignTokens.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(unlocked ? 0.35 : 0.2),
-                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
-                .stroke(unlocked ? tint.opacity(0.45) : .clear, lineWidth: 1))
-        .shadow(color: unlocked ? tint.opacity(0.15) : .clear, radius: 8, y: 3)
+        .padding(24)
+        .background { MetalSurface(family: .plate, flatSide: .bottom, accent: unlocked ? DesignTokens.Palette.orange : DesignTokens.Palette.violet, active: unlocked) }
+        .padding(6)
     }
 }
 

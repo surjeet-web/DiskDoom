@@ -38,7 +38,7 @@ final class AppState: ObservableObject {
             case .privacy: return "Privacy"
             case .photos: return "Photos"
             case .smartClean: return "Smart Clean"
-            case .storage: return "Storage"
+            case .storage: return "Storage Map"
             case .folders: return "Folders"
             case .progress: return "Progress"
             case .developer: return "Dev Projects"
@@ -80,13 +80,15 @@ final class AppState: ObservableObject {
         }
 
         static var primary: [SidebarTab] {
-            [.explore, .duplicates, .similar, .applications, .monitor, .snapshots, .dupMonitor, .progress]
+            [.explore, .duplicates, .applications, .monitor, .snapshots]
         }
 
         static var insights: [SidebarTab] {
             [.smartClean, .litterScore, .forecast, .simulator, .devCaches, .health, .budgets, .liveFeed,
-             .lifecycle, .provenance, .compression, .containers, .privacy, .photos, .storage, .folders]
+             .lifecycle, .provenance, .compression, .containers, .privacy, .photos, .storage]
         }
+
+        static var tools: [SidebarTab] { [.similar, .dupMonitor, .folders, .progress] }
 
         static var professional: [SidebarTab] {
             [.developer, .pro3D, .videoEditor]
@@ -154,6 +156,7 @@ final class AppState: ObservableObject {
         let id = UUID()
         let message: String
         let actionTitle: String
+        var persistent = false
         static func == (l: Banner, r: Banner) -> Bool { l.id == r.id }
     }
 
@@ -431,7 +434,7 @@ final class AppState: ObservableObject {
             if result.isPartial {
                 banner = Banner(
                     message: "Partial scan · \(result.skipped.count) folders unreadable · \(result.root.fileCount.formatted()) files mapped",
-                    actionTitle: "Details")
+                    actionTitle: "Details", persistent: true)
             } else {
                 banner = Banner(
                     message: "Scan complete · \(result.root.fileCount.formatted()) files · \(result.root.sizeString) · \(String(format: "%.1f", result.elapsed))s",
@@ -439,7 +442,10 @@ final class AppState: ObservableObject {
             }
             dismissBannerAfterDelay()
             if notifyOnScan {
-                notifications.postScanComplete(files: result.root.fileCount, bytes: result.root.sizeBytes, seconds: result.elapsed)
+                notifications.postScanComplete(files: result.root.fileCount, bytes: result.root.sizeBytes, seconds: result.elapsed, partial: result.isPartial)
+            } else {
+                ActivityCenter.shared.record(title: result.isPartial ? "Partial scan finished" : "Scan complete",
+                    body: "\(result.root.fileCount.formatted()) files · \(result.root.sizeString) mapped", category: NotificationService.categoryScan)
             }
             gamification.record(GameEvent(kind: .scan, filesScanned: result.root.fileCount))
             if autoSaveSnapshots {
@@ -768,6 +774,7 @@ final class AppState: ObservableObject {
     }
 
     func dismissBannerAfterDelay() {
+        guard banner?.persistent != true else { return }
         let bannerID = banner?.id
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 8_000_000_000)

@@ -66,11 +66,10 @@ struct DiskForecastView: View {
                         .controlSize(.mini)
                     }
                 }
-                .padding(DesignTokens.Space.m)
-                .background(alert.severity.color.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
-                        .stroke(alert.severity.color.opacity(0.2), lineWidth: 1))
+                .padding(24)
+                .background {
+                    MetalSurface(family: .boot, flatSide: .right, accent: alert.severity.color, active: true)
+                }
             }
         }
     }
@@ -186,8 +185,10 @@ struct DiskForecastView: View {
             }
             Spacer()
         }
-        .padding(DesignTokens.Space.l)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.l))
+        .padding(24)
+        .background {
+            MetalSurface(family: .canopy, flatSide: .left, accent: DesignTokens.Palette.cyan)
+        }
     }
 
     // MARK: - Chart (Swift Charts: solid history, dashed projection, thresholds)
@@ -239,7 +240,10 @@ struct DiskForecastView: View {
             .padding(.horizontal, DesignTokens.Space.m)
             .padding(.bottom, DesignTokens.Space.m)
         }
-        .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .padding(20)
+        .background {
+            MetalSurface(family: .well, flatSide: .right, accent: DesignTokens.Palette.cyan)
+        }
     }
 
     private func chartLegend(color: Color, label: String, dashed: Bool) -> some View {
@@ -331,8 +335,10 @@ struct DiskForecastView: View {
                 .padding(.horizontal, DesignTokens.Space.m)
             }
         }
-        .padding(.vertical, DesignTokens.Space.s)
-        .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .padding(20)
+        .background {
+            MetalSurface(family: .tiered, flatSide: .left, accent: DesignTokens.Palette.violet)
+        }
     }
 
     // MARK: - History table
@@ -469,8 +475,10 @@ private struct TrendCard: View {
             Text(subtitle).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(DesignTokens.Space.m)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .padding(24)
+        .background {
+            MetalSurface(family: .plate, flatSide: .bottom, accent: color)
+        }
     }
 }
 
