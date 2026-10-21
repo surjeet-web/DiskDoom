@@ -34,8 +34,6 @@ struct DiskHealthView: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity)
-                    .industrialPanel(.canopy, flatSide: .left, accent: DesignTokens.Palette.teal)
                     .accessibleChart(summary: "Disk health grade \(score.grade), score \(score.overall) out of 100. Junk \(score.junkPercent) percent, stale \(score.stalePercent) percent, cache bloat \(score.cacheBloatScore) out of 100. \(score.recommendation)")
                     VStack(spacing: DesignTokens.Space.m) {
                         HealthComponentRow(label: "Junk Files", badPercent: score.junkPercent, icon: "trash")
@@ -46,9 +44,8 @@ struct DiskHealthView: View {
                                 ? "Unused Apps (not tracked yet)"
                                 : "Unused Apps",
                             badPercent: score.unusedAppRatio,
-                             icon: "app.badge.checkmark")
+                            icon: "app.badge.checkmark")
                     }
-                    .industrialPanel(.well, flatSide: .right, accent: DesignTokens.Palette.teal)
                     Divider()
                     VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
                         Text("Recommended Actions").font(.headline)
@@ -64,10 +61,9 @@ struct DiskHealthView: View {
                                     .frame(width: 150, alignment: .trailing)
                             }
                             .padding(DesignTokens.Space.s)
-                            .background(.quaternary.opacity(0.15))
+                            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
                         }
                     }
-                    .industrialPanel(.boot, flatSide: .left, accent: DesignTokens.Palette.orange)
                 }
                 .padding()
             } else {

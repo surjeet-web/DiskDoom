@@ -13,11 +13,8 @@ struct EmptyState: View {
     var body: some View {
         VStack(spacing: DesignTokens.Space.m) {
             Image(systemName: symbol)
-                .font(.system(size: 42, weight: .light))
-                .foregroundStyle(DesignTokens.Palette.cyan)
-                .frame(width: 104, height: 96)
-                .background { MetalSurface(family: .well, flatSide: .bottom, depth: 8) }
-                .padding(.bottom, 12)
+                .font(.system(size: 64))
+                .foregroundStyle(.tertiary)
             Text(title)
                 .font(.title2.weight(.semibold))
             Text(message)
@@ -27,10 +24,9 @@ struct EmptyState: View {
                 .frame(maxWidth: 420)
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
-                    .buttonStyle(PlateButtonStyle(primary: true))
+                    .buttonStyle(.borderedProminent)
             }
         }
-        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -49,7 +45,7 @@ struct StatusBadge: View {
             .padding(.vertical, DesignTokens.Space.xs)
             .background(pillColor.opacity(0.15))
             .foregroundStyle(pillColor)
-            .clipShape(ChassisShape(flatSide: .bottom, cut: 4))
+            .clipShape(.capsule)
     }
 
     private var pillColor: Color {
@@ -72,7 +68,7 @@ struct SizeBadge: View {
             .padding(.vertical, DesignTokens.Space.xs)
             .background(badgeColor.opacity(0.15))
             .foregroundStyle(badgeColor)
-            .clipShape(ChassisShape(flatSide: .bottom, cut: 4))
+            .clipShape(.capsule)
     }
 
     private var badgeColor: Color {
@@ -88,13 +84,6 @@ struct CategoryLegend: View {
     let categories: [NodeCategory]
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            legend
-            ScrollView(.horizontal) { legend }
-        }
-    }
-
-    private var legend: some View {
         HStack(spacing: DesignTokens.Space.s) {
             ForEach(categories, id: \.self) { category in
                 HStack(spacing: DesignTokens.Space.xs) {
@@ -102,10 +91,12 @@ struct CategoryLegend: View {
                         .fill(category.color)
                         .frame(width: 16, height: 16)
                     Text(category.label)
-                        .font(.caption)
+                        .font(.callout)
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 4)
+                .padding(.horizontal, DesignTokens.Space.m)
+                .padding(.vertical, DesignTokens.Space.s)
+                .background(Color.secondary.opacity(0.06))
+                .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
             }
         }
     }

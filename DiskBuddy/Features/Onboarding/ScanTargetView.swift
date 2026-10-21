@@ -109,8 +109,13 @@ struct ScanTargetView: View {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
             }
-            .padding(20)
-            .background { MetalSurface(flatSide: .right, accent: DesignTokens.Palette.orange, active: isSelected) }
+            .padding(DesignTokens.Space.m)
+            .background(.quaternary)
+            .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
+                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+            )
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])

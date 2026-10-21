@@ -8,12 +8,6 @@ struct FolderExplorerView: View {
 
     @State private var customThresholdGB = 5.0
     @State private var inspectorNode: FolderNode?
-    @State private var selectedIDs: Set<String> = []
-    @State private var tableSort: [KeyPathComparator<FolderNode>] = []
-    @AppStorage("folderTableShowItems") private var showItemsColumn = true
-    @AppStorage("folderTableShowType") private var showTypeColumn = true
-    @AppStorage("folderTableShowModified") private var showModifiedColumn = true
-    @AppStorage("folderTableShowShare") private var showShareColumn = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,37 +37,24 @@ struct FolderExplorerView: View {
             state.folderSearchDestination = nil
             engine.navigate(to: destination)
         }
-        .onChange(of: state.folderSearchDestination) { destination in
-            guard let destination else { return }
-            state.folderSearchDestination = nil
-            engine.navigate(to: destination)
-        }
         .sheet(item: $inspectorNode) { node in
             FolderInspectorSheet(node: node, engine: engine)
         }
-        .onChange(of: engine.measurement) { _ in
-            inspectorNode = nil
-            selectedIDs.formIntersection(Set(engine.children.map(\.id)))
-        }
-        .onChange(of: engine.children.map(\.id)) { ids in selectedIDs.formIntersection(Set(ids)) }
+        .onChange(of: engine.measurement) { _ in inspectorNode = nil }
     }
 
     // MARK: Toolbar
 
     private var toolbar: some View {
-        ScrollView(.horizontal) {
         HStack(spacing: DesignTokens.Space.m) {
             HStack(spacing: DesignTokens.Space.xs) {
                 Button { engine.goBack() } label: { Image(systemName: "chevron.left") }
-                    .accessibilityLabel("Back")
                     .disabled(!engine.canGoBack)
                     .keyboardShortcut("[", modifiers: .command)
                 Button { engine.goForward() } label: { Image(systemName: "chevron.right") }
-                    .accessibilityLabel("Forward")
                     .disabled(!engine.canGoForward)
                     .keyboardShortcut("]", modifiers: .command)
                 Button { engine.goUp() } label: { Image(systemName: "chevron.up") }
-                    .accessibilityLabel("Parent folder")
                     .disabled(!engine.canGoUp)
                     .keyboardShortcut("u", modifiers: .command)
             }
@@ -130,7 +111,7 @@ struct FolderExplorerView: View {
             .frame(width: 140)
             Picker("", selection: Binding(
                 get: { engine.sortBy },
-                set: { tableSort = []; engine.setSort($0) })) {
+                set: { engine.setSort($0) })) {
                     ForEach(FolderExplorerEngine.SortOption.allCases, id: \.self) { option in
                         Text(option.rawValue).tag(option)
                     }
@@ -146,7 +127,6 @@ struct FolderExplorerView: View {
                 .controlSize(.small)
                 .help("Show hidden files")
             Button { engine.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .accessibilityLabel("Refresh folder measurement")
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             Button { engine.showTreemap.toggle() } label: {
@@ -158,8 +138,7 @@ struct FolderExplorerView: View {
         }
         .padding(.horizontal, DesignTokens.Space.m)
         .padding(.vertical, DesignTokens.Space.s)
-        }
-        .background(DesignTokens.Palette.panel)
+        .background(.ultraThinMaterial)
     }
 
     // MARK: Summary
@@ -219,134 +198,26 @@ struct FolderExplorerView: View {
     }
 
     private var explorerList: some View {
-        GeometryReader { geometry in
-        ScrollView(.horizontal) {
         HSplitView {
-            VStack(spacing: 0) {
-                HStack {
-                    Text(selectedIDs.isEmpty ? "\(engine.children.count) visible items" : "\(selectedIDs.count) selected")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    Spacer()
-                    if !selectedIDs.isEmpty {
-                        Button("Stage Selection…") { stageSelection() }
-                            .buttonStyle(.bordered)
-                        Button("Inspect") {
-                            inspectorNode = engine.children.first { selectedIDs.contains($0.id) }
-                        }.disabled(selectedIDs.count != 1)
-                    }
-                    Menu("Columns") {
-                        if #available(macOS 14.4, *) {
-                        Toggle("Items", isOn: $showItemsColumn)
-                        Toggle("Type", isOn: $showTypeColumn)
-                        Toggle("Modified", isOn: $showModifiedColumn)
-                        Toggle("Parent Share", isOn: $showShareColumn)
-                        } else {
-                            Text("All columns shown · visibility options require macOS 14.4")
-                        }
-                    }
-                }.padding(12)
-                Group {
-                if #available(macOS 14.4, *) {
-                Table(engine.children, selection: $selectedIDs, sortOrder: $tableSort) {
-                    TableColumn("Name", value: \.name) { node in
-                        Label(node.name, systemImage: node.isDirectory ? "folder" : "doc")
-                            .lineLimit(1).help("\(node.path)\n\(node.provenanceDisplay)\n\(node.shareDisplay)")
-                    }.width(min: 220, ideal: 280)
-                    TableColumn("Size", value: \.size) { node in
-                        Text(node.sizeDisplay).monospacedDigit()
-                            .foregroundStyle(node.isUnreadable ? Color.orange : Color.primary)
-                    }.width(min: 110, ideal: 150)
-                    if showItemsColumn {
-                        TableColumn("Items") { node in Text(node.childCountDisplay).monospacedDigit() }
-                            .width(min: 80, ideal: 100)
-                    }
-                    if showTypeColumn {
-                        TableColumn("Type") { node in
-                            Text(node.isSymlink ? "Symbolic link" : node.isPackage ? "Package" : node.isDirectory ? "Folder" : node.fileExtension ?? "File")
-                        }.width(min: 90, ideal: 120)
-                    }
-                    if showModifiedColumn {
-                        TableColumn("Modified") { node in
-                            Text(node.modifiedDisplay).lineLimit(1)
-                        }.width(min: 110, ideal: 140)
-                    }
-                    if showShareColumn {
-                        TableColumn("Parent Share") { node in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(node.shareDisplay).font(.caption.monospacedDigit())
-                                if !node.isUnreadable && !node.parentIsPartial {
-                                    ProgressView(value: min(1, max(0, node.percentageOfParent / 100)))
-                                        .tint(DesignTokens.Palette.cyan)
-                                }
-                            }.padding(.vertical, 4)
-                        }.width(min: 100, ideal: 130)
+            List(selection: Binding(
+                get: { engine.selectedNode },
+                set: { engine.selectedNode = $0 })) {
+                    ForEach(Array(engine.children.enumerated()), id: \.element.id) { index, node in
+                        FolderRow(
+                            node: node,
+                            rank: index + 1,
+                            onTap: { engine.enterFolder(node) },
+                            onInspect: { inspectorNode = node })
+                            .tag(node)
+                            .contextMenu { contextMenu(for: node) }
                     }
                 }
-                } else {
-                    // Conditional TableColumnBuilder content requires 14.4.
-                    // Ventura retains the complete native ledger, not a fake
-                    // column-visibility control or a raised deployment target.
-                    Table(engine.children, selection: $selectedIDs, sortOrder: $tableSort) {
-                        TableColumn("Name", value: \.name) { node in
-                            Label(node.name, systemImage: node.isDirectory ? "folder" : "doc")
-                                .lineLimit(1).help("\(node.path)\n\(node.provenanceDisplay)\n\(node.shareDisplay)")
-                        }.width(min: 220, ideal: 280)
-                        TableColumn("Size", value: \.size) { node in Text(node.sizeDisplay).monospacedDigit() }
-                            .width(min: 110, ideal: 150)
-                        TableColumn("Items") { node in Text(node.childCountDisplay).monospacedDigit() }
-                            .width(min: 80, ideal: 100)
-                        TableColumn("Type") { node in
-                            Text(node.isSymlink ? "Symbolic link" : node.isPackage ? "Package" : node.isDirectory ? "Folder" : node.fileExtension ?? "File")
-                        }.width(min: 90, ideal: 120)
-                        TableColumn("Modified") { node in Text(node.modifiedDisplay).lineLimit(1) }
-                            .width(min: 110, ideal: 140)
-                        TableColumn("Parent Share") { node in Text(node.shareDisplay).font(.caption.monospacedDigit()) }
-                            .width(min: 100, ideal: 130)
-                    }
-                }
-                }
-                .contextMenu(forSelectionType: String.self) { ids in
-                    if ids.count == 1, let node = engine.children.first(where: { ids.contains($0.id) }) {
-                        contextMenu(for: node)
-                    } else if !ids.isEmpty {
-                        Button("Stage \(ids.count) items for review…") {
-                            selectedIDs = ids
-                            stageSelection()
-                        }
-                    }
-                } primaryAction: { ids in
-                    if ids.count == 1, let node = engine.children.first(where: { ids.contains($0.id) }) {
-                        engine.enterFolder(node)
-                    }
-                }
-                .onChange(of: selectedIDs) { ids in engine.selectedNode = engine.children.first { ids.contains($0.id) } }
-                .onChange(of: tableSort) { order in
-                    guard let first = order.first else { return }
-                    // Sort the entire measured set BEFORE the engine's display
-                    // limit, not just the already-truncated visible rows.
-                    if first.keyPath == \FolderNode.name {
-                        engine.setSort(first.order == .forward ? .nameAscending : .nameDescending)
-                    } else if first.keyPath == \FolderNode.size {
-                        engine.setSort(first.order == .forward ? .sizeAscending : .sizeDescending)
-                    }
-                }
-            }
-            if let node = inspectorNode, geometry.size.width >= 1000 {
+                .listStyle(.inset(alternatesRowBackgrounds: true))
+            if let node = inspectorNode {
                 FolderInspectorPanel(node: node)
                     .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
             }
         }
-        .frame(width: max(640, geometry.size.width), height: geometry.size.height)
-        }
-        }
-    }
-
-    private func stageSelection() {
-        for node in engine.children where selectedIDs.contains(node.id) {
-            state.stage(source: "Folders", path: node.path,
-                        bytes: node.isUnreadable || node.isPartial || node.evidence(node.size).availableValue == nil ? -1 : node.size)
-        }
-        state.showCleanup = true
     }
 
     // MARK: Context Menu (staging only — deletion happens in the queue)

@@ -8,96 +8,19 @@ struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var permissions: PermissionsService
     @EnvironmentObject var license: LicenseStore
-    @State private var category: Category = .general
-
-    private enum Category: String, CaseIterable {
-        case general = "General", scanning = "Scanning", appearance = "Appearance", menuBar = "Menu Bar", about = "About"
-        var symbol: String {
-            switch self {
-            case .general: return "gearshape"
-            case .scanning: return "magnifyingglass"
-            case .appearance: return "paintpalette"
-            case .menuBar: return "menubar.rectangle"
-            case .about: return "info.circle"
-            }
-        }
-    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("SETTINGS").font(.caption.weight(.bold)).tracking(2).padding(.vertical, 14)
-                ForEach(Category.allCases, id: \.self) { item in
-                    Button { category = item } label: {
-                        Label(item.rawValue, systemImage: item.symbol).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(PlateButtonStyle(selected: category == item))
-                    .accessibilityAddTraits(category == item ? [.isSelected] : [])
-                }
-                Spacer()
-                Text("Changes save immediately").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(20).frame(width: 180)
-            .background { MetalSurface(family: .boot, flatSide: .right) }
-            VStack(alignment: .leading, spacing: 0) {
-                Text(category.rawValue).font(.title2.weight(.bold)).padding(24)
-                Divider()
-                Group {
-                    switch category {
-                    case .general: GeneralSettingsTab()
-                    case .scanning: ScanningSettingsTab()
-                    case .appearance: AppearanceSettingsTab()
-                    case .menuBar: MenuBarSettingsTab()
-                    case .about: AboutTab()
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .background { MetalSurface(family: .tiered, flatSide: .left) }
+        TabView {
+            GeneralSettingsTab()
+                .tabItem { Label("General", systemImage: "gear") }
+            ScanningSettingsTab()
+                .tabItem { Label("Scanning", systemImage: "magnifyingglass") }
+            MenuBarSettingsTab()
+                .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
+            AboutTab()
+                .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .padding(20)
-        .frame(minWidth: 720, idealWidth: 840, maxWidth: 1000,
-               minHeight: 600, idealHeight: 680, maxHeight: 900)
-        .background(DesignTokens.Palette.void)
-        .preferredColorScheme(.dark)
-    }
-}
-
-private struct AppearanceSettingsTab: View {
-    @AppStorage("industrialEffects") private var effects = true
-    @AppStorage("listRowHeight") private var rowHeight = 40.0
-    var body: some View {
-        Form {
-            Section("Cinematic reference") {
-                Text("Uses the supplied DiskDoom HTML colors, connected chassis, and saturated metallic visualization materials.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("Ambient lighting and decorative details", isOn: $effects)
-                    .accessibilityIdentifier("appearance.effects")
-                Text("Effects are decorative and never carry data. No continuous particle animation runs in the background.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Reading density") {
-                Picker("List row height", selection: $rowHeight) {
-                    Text("Comfortable · 48 pt").tag(48.0)
-                    Text("Standard · 40 pt").tag(40.0)
-                    Text("Dense · 34 pt").tag(34.0)
-                }
-                Text("Applies to native lists; specialized charts and file previews retain their safe content sizes.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Live specimen") {
-                HStack {
-                    Label("Selected module", systemImage: "internaldrive")
-                    Spacer()
-                    Text("PLANAR TEXT").font(.caption.monospaced()).foregroundStyle(.secondary)
-                }
-                .industrialPanel(.plate, accent: DesignTokens.Palette.orange)
-            }
-            Section("Accessibility") {
-                Text("System Reduce Motion and Increase Contrast are respected. Content and keyboard focus stay above decorative frames; reading surfaces remain opaque.")
-                    .font(.callout)
-            }
-        }.formStyle(.grouped)
+        .frame(width: 560, height: 600)
     }
 }
 
@@ -240,8 +163,7 @@ private struct GeneralSettingsTab: View {
         .onAppear {
             loginEnabled = SMAppService.mainApp.status == .enabled
             UNUserNotificationCenter.current().getNotificationSettings {
-                let status = $0.authorizationStatus
-                Task { @MainActor in notifyStatus = status }
+                notifyStatus = $0.authorizationStatus
             }
         }
     }

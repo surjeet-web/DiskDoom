@@ -48,21 +48,21 @@ struct MonitorView: View {
         }
     }
 
-    // MARK: §18 Dashboard (measured metrics + real CPU/memory history)
+    // MARK: §18 Dashboard (real gauges + real CPU/memory history)
 
     private var dashboard: some View {
         ScrollView {
             VStack(spacing: DesignTokens.Space.l) {
-                VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("CPU · Recent History").font(.headline)
-                        Spacer()
-                        Text(monitor.cpuMeasurement.availableValue.map { "\(Int($0))%" } ?? monitor.cpuMeasurement.statusLabel)
-                            .font(.largeTitle.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(DesignTokens.Palette.cyan)
-                    }
-                    CPUHistoryChart(samples: cpuHistory.samples, tint: DesignTokens.Palette.cyan)
-                        .frame(height: 200)
+                HStack(spacing: DesignTokens.Space.xl) {
+                    GaugeView(title: "CPU", value: monitor.cpuMeasurement.availableValue.map { $0 / 100 } ?? 0, label: monitor.cpuMeasurement.availableValue.map { "\(Int($0))%" } ?? monitor.cpuMeasurement.statusLabel, tint: .blue)
+                    GaugeView(title: "Memory", value: monitor.isMemoryAvailable ? monitor.memoryUsedGB / max(monitor.memoryTotalGB, 0.01) : 0, label: monitor.isMemoryAvailable ? "\(String(format: "%.1f", monitor.memoryUsedGB))/\(String(format: "%.0f", monitor.memoryTotalGB)) GB" : "Unavailable", tint: .purple)
+                    GaugeView(title: "Processes", value: min(Double(monitor.processes.count) / 500, 1), label: "\(monitor.processes.count)", tint: .orange)
+                    GaugeView(title: "Uptime", value: 1, label: monitor.uptimeText, tint: .green)
+                }
+                VStack(alignment: .leading) {
+                    Text("Recent CPU History").font(.headline)
+                    CPUHistoryChart(samples: cpuHistory.samples, tint: .blue)
+                        .frame(height: 90)
                     Text(monitor.cpuMeasurement.reason ?? monitor.cpuMeasurement.source ?? monitor.cpuMeasurement.statusLabel)
                         .font(.caption).foregroundStyle(.secondary)
                     if let date = cpuHistory.samples.last?.measuredAt {
@@ -70,40 +70,15 @@ struct MonitorView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                .padding(24)
-                .background { MetalSurface(family: .canopy, flatSide: .right, accent: DesignTokens.Palette.cyan) }
-                HStack(alignment: .top, spacing: DesignTokens.Space.xl) {
-                    dashboardMetric("Processes", value: "\(monitor.processes.count)")
-                    Divider()
-                    dashboardMetric("Uptime", value: monitor.uptimeText)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 24)
-                VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Recent Memory History").font(.headline)
-                        Spacer()
-                        Text(monitor.isMemoryAvailable ? "\(String(format: "%.1f", monitor.memoryUsedGB))/\(String(format: "%.0f", monitor.memoryTotalGB)) GB" : "Unavailable")
-                            .font(.title3.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(DesignTokens.Palette.violet)
-                    }
-                    Sparkline(values: memHistory, tint: DesignTokens.Palette.violet)
+                .specCard()
+                VStack(alignment: .leading) {
+                    Text("Recent Memory History").font(.headline)
+                    Sparkline(values: memHistory, tint: .purple)
                         .frame(height: 90)
                 }
-                .padding(24)
-                .background { MetalSurface(family: .well, flatSide: .right, accent: DesignTokens.Palette.violet) }
+                .specCard()
             }
-            .padding(6)
         }
-    }
-
-    private func dashboardMetric(_ title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.title2.weight(.semibold).monospacedDigit())
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: §19 Real process table (NSWorkspace + proc_pidinfo)
@@ -203,6 +178,35 @@ struct MonitorView: View {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Spacer()
             Text(value).font(.caption.monospacedDigit())
+        }
+    }
+}
+
+// MARK: - Circular gauge (§18)
+
+private struct GaugeView: View {
+    let title: String
+    let value: Double
+    let label: String
+    let tint: Color
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .stroke(tint.opacity(0.2), lineWidth: 10)
+                    .frame(width: 80, height: 80)
+                Circle()
+                    .trim(from: 0, to: min(max(value, 0), 1))
+                    .stroke(tint, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 80, height: 80)
+                Text(label)
+                    .font(.caption2.monospacedDigit())
+                    .frame(width: 70)
+                    .multilineTextAlignment(.center)
+            }
+            Text(title).font(.caption).foregroundStyle(.secondary)
         }
     }
 }

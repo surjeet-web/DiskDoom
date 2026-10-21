@@ -47,7 +47,6 @@ struct RemovalSheet: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close removal review")
             }
 
             if let result {
@@ -105,10 +104,8 @@ struct RemovalSheet: View {
                 }
             }
         }
-        .padding(24)
-        .background { MetalSurface(family: .tiered, flatSide: .top, accent: DesignTokens.Palette.orange) }
-        .padding(6)
-        .frame(width: 600)
+        .padding(DesignTokens.Space.xl)
+        .frame(width: 560)
         .onAppear {
             guard !didLoadDefaults else { return }
             didLoadDefaults = true
@@ -162,13 +159,10 @@ struct RemovalSheet: View {
         state.removalOverwrite = overwrite
         state.saveSettings()
         let items = request.items
-        let chosenMethod = method
-        let chosenDestination = destination
-        let shouldOverwrite = overwrite
         Task {
             let outcome = await Task.detached(priority: .userInitiated) {
-                RemovalService.remove(items: items, method: chosenMethod,
-                                      destination: chosenDestination, overwrite: shouldOverwrite)
+                RemovalService.remove(items: items, method: method,
+                                      destination: destination, overwrite: overwrite)
             }.value
             await MainActor.run {
                 result = outcome

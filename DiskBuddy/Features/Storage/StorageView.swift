@@ -139,10 +139,8 @@ struct StorageView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(24)
-        .background {
-            MetalSurface(family: .canopy, flatSide: .left, accent: DesignTokens.Palette.cyan)
-        }
+        .padding(DesignTokens.Space.m)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.l))
     }
 
     // MARK: Physical layer cards
@@ -163,10 +161,8 @@ struct StorageView: View {
                 containerCard(container, parentLabel: nil)
             }
         }
-        .padding(24)
-        .background {
-            MetalSurface(family: .tiered, flatSide: .right, accent: DesignTokens.Palette.cyan)
-        }
+        .padding(DesignTokens.Space.m)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
     }
 
     private func containerCard(_ container: APFSContainerInfo, parentLabel: String?) -> some View {
@@ -226,10 +222,8 @@ struct StorageView: View {
                 }
             }
         }
-        .padding(20)
-        .background {
-            MetalSurface(family: .well, flatSide: .right, depth: 2, accent: DesignTokens.Palette.teal)
-        }
+        .padding(DesignTokens.Space.s)
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.s))
     }
 
     // MARK: Honest snapshot card (no fabricated sizes, no shell commands)
@@ -254,10 +248,8 @@ struct StorageView: View {
             Text("Snapshots share blocks with the live volume — macOS reclaims their space automatically when storage runs low.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(24)
-        .background {
-            MetalSurface(family: .boot, flatSide: .left, accent: DesignTokens.Palette.orange)
-        }
+        .padding(DesignTokens.Space.m)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
     }
 }
 

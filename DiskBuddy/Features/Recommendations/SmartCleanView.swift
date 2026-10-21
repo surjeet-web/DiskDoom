@@ -98,11 +98,7 @@ struct SmartCleanView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
                 }
-                .padding(24)
-                .background {
-                    MetalSurface(family: .canopy, flatSide: .top, accent: DesignTokens.Palette.teal)
-                }
-                .padding(12)
+                .padding(DesignTokens.Space.m)
                 Divider()
             }
             if engine.recommendations.isEmpty {
@@ -171,10 +167,8 @@ struct SmartCleanView: View {
                 .disabled(rec.paths.isEmpty)
             }
         }
-        .padding(24)
-        .background {
-            MetalSurface(family: .plate, flatSide: .right, accent: DesignTokens.Palette.orange)
-        }
+        .padding(DesignTokens.Space.m)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
     }
 
     private func stagedCount(in rec: Recommendation) -> Int {

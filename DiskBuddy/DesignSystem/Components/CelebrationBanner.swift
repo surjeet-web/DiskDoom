@@ -44,13 +44,18 @@ struct CelebrationBanner: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white.opacity(0.8))
-                .accessibilityLabel("Dismiss celebration")
             }
             .foregroundStyle(.white)
-            .padding(24)
+            .padding(DesignTokens.Space.m)
             .frame(maxWidth: 520)
-            .background { MetalSurface(family: .canopy, flatSide: .top, accent: DesignTokens.Palette.violet, active: true) }
-            .padding(.horizontal, 6)
+            .background(
+                LinearGradient(colors: [Color(hex: 0x3A1C71), Color(hex: 0x6A38C2)],
+                               startPoint: .leading, endPoint: .trailing),
+                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.l))
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.l)
+                    .stroke(.white.opacity(0.2), lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 16, y: 6)
             .padding(.top, 18)
         }
         .task(id: celebration.id) {
@@ -93,9 +98,14 @@ struct XPRewardToast: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .accessibilityLabel("Dismiss XP reward")
         }
-        .industrialPanel(.boot, flatSide: .bottom, accent: DesignTokens.Palette.orange)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.yellow.opacity(0.35), lineWidth: 1))
+        .shadow(color: .black.opacity(0.2), radius: 12, y: 5)
         .task(id: reward.id) {
             try? await Task.sleep(for: .seconds(2.2))
             guard !Task.isCancelled else { return }

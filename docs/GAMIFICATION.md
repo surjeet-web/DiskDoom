@@ -12,7 +12,7 @@ The path can be overridden with `DISKBUDDY_GAMIFICATION_PATH` (used by UI tests)
 
 | Action | Event | Base XP |
 | --- | --- | --- |
-| User-initiated scan | `.scan` | `10 + min(15, filesScanned / 20,000)` |
+| Successful scan | `.scan` | `10 + min(15, filesScanned / 20,000)` |
 | Confirmed cleanup queue removal | `.cleanup` | `20 + min(80, GB × 10) + min(20, items / 10)` |
 | Duplicate removal (direct or queue) | `.duplicateCleanup` | `15 + min(60, GB × 8) + min(20, items / 5)` |
 | Similar-photo removal | `.similarCleanup` | `15 + min(60, GB × 8) + min(20, items / 5)` |
@@ -23,10 +23,6 @@ The path can be overridden with `DISKBUDDY_GAMIFICATION_PATH` (used by UI tests)
 
 Moving photos into the “Trash (DiskBuddy)” album does **not** award cleanup XP,
 because the bytes are still in the library. Deleting from the library does.
-
-Background checks performed by Duplicate Monitor do not award scan XP — only a
-user-initiated scan or cleanup does. This keeps progression tied to deliberate
-work.
 
 The cleanup queue records one event per source group, so a single queue run can
 advance duplicate, similar, and generic cleanup counters independently.

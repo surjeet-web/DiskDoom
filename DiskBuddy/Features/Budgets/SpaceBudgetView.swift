@@ -93,12 +93,11 @@ private struct BudgetCard: View {
             }
             .font(.caption)
         }
-        .padding(24)
-        .background {
-            MetalSurface(family: .tiered, flatSide: .right,
-                         accent: status.isOverBudget ? .red : DesignTokens.Palette.teal,
-                         active: status.isOverBudget)
-        }
+        .padding(DesignTokens.Space.m)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.m))
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
+                .stroke(status.isOverBudget ? Color.red.opacity(0.3) : .clear, lineWidth: 1))
     }
 }
 

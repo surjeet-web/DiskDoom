@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Shared native industrial styles
+// MARK: - Shared styles (prototype)
 
 // Accent CTA button per spec §01/§02/§03 (320pt wide, title3 weight).
 struct AccentCTAButton: ViewModifier {
@@ -9,10 +9,11 @@ struct AccentCTAButton: ViewModifier {
     func body(content: Content) -> some View {
         content
             .font(.title3.weight(.semibold))
-            .frame(maxWidth: 320)
+            .frame(width: 320)
             .padding(.vertical, DesignTokens.Space.s)
-            .background(enabled ? DesignTokens.Palette.orange : Color.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 7))
-            .foregroundStyle(enabled ? Color.black : Color.secondary)
+            .background(enabled ? Color.accentColor : Color.secondary.opacity(0.3))
+            .foregroundStyle(enabled ? .white : .secondary)
+            .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
             .opacity(enabled ? 1 : 0.6)
     }
 }
@@ -22,8 +23,10 @@ extension View {
         modifier(AccentCTAButton(enabled: enabled))
     }
 
-    /// Legacy call sites share the same protected industrial panel contract.
+    /// Subtle spec card: quaternary fill, 10pt radius (§01 feature cards, §02 info card).
     func specCard() -> some View {
-        industrialPanel(.plate)
+        padding(DesignTokens.Space.m)
+            .background(.quaternary)
+            .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
     }
 }

@@ -1,34 +1,24 @@
 import SwiftUI
 import Combine
 
-/// The supplied HTML's connected header/nav/workspace/inspector/footer grid.
-/// Services, selection and native operations remain the application's own.
-struct MainWindowView: View {
-    private let prepareServices: Bool
+// MARK: - Main window: sidebar (§36) + toolbar (§35) + inspector (§13/§14) + banners (§34) + drop zone (§33)
 
-    init(prepareServices: Bool = true) { self.prepareServices = prepareServices }
-    @EnvironmentObject private var state: AppState
-    @EnvironmentObject private var topology: DiskTopologyService
-    @EnvironmentObject private var coordinator: LaunchCoordinator
-    @EnvironmentObject private var inventory: AppInventoryService
-    @EnvironmentObject private var gamification: GamificationEngine
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("navigationExpanded") private var navigationExpanded = true
+struct MainWindowView: View {
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var topology: DiskTopologyService
+    @EnvironmentObject var coordinator: LaunchCoordinator
+    @EnvironmentObject var inventory: AppInventoryService
+    @EnvironmentObject var gamification: GamificationEngine
     @AppStorage("showXPRewards") private var showXPRewards = true
-    @ObservedObject private var activity = ActivityCenter.shared
-    @State private var showActivity = false
-    @State private var showCoverage = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dropTargeted = false
     @State private var observedScanRootID: UUID?
     @State private var searchQuery = ""
-    @State private var searchIsActive = false
     @State private var searchResult = GlobalSearchResult.empty
     @State private var activeSearch: SearchKey?
     @State private var completedSearch: SearchKey?
     @State private var appSearchRevision = 0
     @State private var requestedSearchInventory = false
-    @State private var visualizationReset = 0
-    @State private var lastStorageAlertID: UUID?
     @FocusState private var searchFocused: Bool
 
     private struct SearchKey: Hashable {
@@ -42,334 +32,513 @@ struct MainWindowView: View {
                   scanRevision: state.searchRevision, appsRevision: appSearchRevision)
     }
 
-    private var hasContextInspector: Bool { state.sidebarTab == .explore || state.sidebarTab == .applications }
-
     var body: some View {
-        GeometryReader { geometry in
-            let metrics = CinematicMetrics(viewport: geometry.size, expanded: navigationExpanded,
-                                           inspector: hasContextInspector && state.inspectorVisible)
-            ScrollView(.vertical) {
-                shell(metrics)
-                    .frame(width: metrics.width, height: metrics.shellHeight)
-                    .padding(.vertical, metrics.margin)
-                    .frame(maxWidth: .infinity)
+        NavigationSplitView {
+            sidebar
+                .frame(minWidth: DesignTokens.Layout.sidebarWidth)
+        } detail: {
+            HSplitView {
+                VStack(spacing: 0) {
+                    if let banner = state.banner {
+                        NotificationBannerView(banner: banner)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    // §31A: limited-mode notice when FDA was skipped.
+                    if (state.limitedMode || !state.permissions.fdaGranted) && state.scanPhase != .scanning {
+                        HStack {
+                            Image(systemName: "lock.fill").foregroundStyle(.orange)
+                            Text("Limited mode — Full Disk Access not granted.")
+                                .font(.caption)
+                            Spacer()
+                            Button("Open System Settings") {
+                                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                        }
+                        .padding(.horizontal, DesignTokens.Space.m)
+                        .padding(.vertical, DesignTokens.Space.xs)
+                        .background(.orange.opacity(0.08))
+                    }
+                    ZStack {
+                        detailContent
+                            .animation(reduceMotion ? nil : DesignTokens.Motion.navigation, value: state.sidebarTab)
+                        // §33 drag-and-drop overlay.
+                        if dropTargeted {
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.l)
+                                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [10, 6]))
+                                .background(.ultraThickMaterial)
+                                .overlay(
+                                    VStack(spacing: DesignTokens.Space.m) {
+                                        Image(systemName: "folder.badge.plus")
+                                            .font(.system(size: 48))
+                                            .foregroundStyle(Color.accentColor)
+                                        Text("Drop folder to scan")
+                                            .font(.title3.weight(.semibold))
+                                    }
+                                )
+                                .padding(DesignTokens.Space.xl)
+                        }
+                    }
+                    statusBar
+                }
+                .frame(minWidth: 500)
+                .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+                    // Real folder drop: resolve the first dropped directory and scan it.
+                    guard let provider = providers.first else { return false }
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        guard let url else { return }
+                        var isDir: ObjCBool = false
+                        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return }
+                        DispatchQueue.main.async {
+                            state.startRealScan(root: url, label: url.lastPathComponent)
+                        }
+                    }
+                    return true
+                }
+                if state.inspectorVisible {
+                    InspectorView()
+                        .frame(minWidth: 240, idealWidth: DesignTokens.Layout.inspectorWidth, maxWidth: 360)
+                        .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                }
             }
-            .background(CinematicStage())
+            .animation(reduceMotion ? nil : DesignTokens.Motion.navigation, value: state.inspectorVisible)
         }
-        .frame(minWidth: 820, minHeight: 640)
-        .preferredColorScheme(.dark)
-        .sheet(isPresented: $state.showCleanup) { CleanupQueueSheet().environmentObject(state) }
-        .sheet(isPresented: $showActivity) { ActivityCenterView().environmentObject(state) }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(state.scanPhase == .scanning ? "Cancel" : "Scan") {
+                    state.scanPhase == .scanning ? state.cancelScan() : state.startScan()
+                }
+                .keyboardShortcut("r", modifiers: .command)
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                TextField("Search everywhere", text: $searchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                    .focused($searchFocused)
+                    .onSubmit {
+                        if activeSearch == searchKey, let first = searchResult.hits.first {
+                            openSearchResult(first)
+                        }
+                    }
+                    .help("Search sections, visualizations, installed apps, and indexed files (⌘F)")
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Find", systemImage: "magnifyingglass") { searchFocused = true }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut("f", modifiers: .command)
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
+                        state.inspectorVisible.toggle()
+                    }
+                } label: {
+                    Label("Inspector", systemImage: "sidebar.right")
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    state.showCleanup = true
+                } label: {
+                    Label(
+                        state.cleanupItems.isEmpty ? "Cleanup" : "Cleanup (\(state.cleanupItems.count))",
+                        systemImage: "trash"
+                    )
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    state.saveSnapshotFromCurrentScan(label: "Manual")
+                    state.sidebarTab = .snapshots
+                } label: {
+                    Label("Snapshot", systemImage: "camera")
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(state.scanRoot == nil)
+            }
+        }
+        .sheet(isPresented: $state.showCleanup) {
+            CleanupQueueSheet().environmentObject(state)
+        }
         .sheet(item: $state.uninstallApp) { app in
             UninstallSheet(app: app).environmentObject(state).environmentObject(inventory)
         }
-        .sheet(item: $state.quickLookNode) { node in QuickLookSheet(node: node).environmentObject(state) }
-        .sheet(isPresented: $showCoverage) { coverageSheet }
+        .sheet(item: $state.quickLookNode) { node in
+            QuickLookSheet(node: node).environmentObject(state)
+        }
         .overlay(alignment: .top) {
             if let celebration = gamification.currentCelebration {
-                CelebrationBanner(celebration: celebration) { gamification.dismissCurrentCelebration() }
-                    .transition(.opacity).zIndex(20)
+                CelebrationBanner(celebration: celebration) {
+                    gamification.dismissCurrentCelebration()
+                }
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                .zIndex(20)
             }
         }
         .overlay(alignment: .bottomTrailing) {
             if showXPRewards, let reward = gamification.currentReward {
-                XPRewardToast(reward: reward) { gamification.dismissCurrentReward() }
-                    .padding(24).transition(.opacity).zIndex(19)
+                XPRewardToast(reward: reward) {
+                    gamification.dismissCurrentReward()
+                }
+                .padding(DesignTokens.Space.l)
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .zIndex(19)
             }
         }
-        .onAppear { if prepareServices { state.startupCheck() } }
+        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86),
+                   value: gamification.currentReward)
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85),
+                   value: gamification.currentCelebration)
+        .animation(reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.base), value: state.banner)
+        .onAppear {
+            state.startupCheck()
+            Task {
+                await topology.loadCapacity()
+                await topology.loadExternals()
+            }
+        }
         .onReceive(state.$scanRoot) { root in
-            if let previous = observedScanRootID, previous != root?.id { state.selectedNode = nil }
-            observedScanRootID = root?.id
+            if observedScanRootID != root?.id {
+                observedScanRootID = root?.id
+                state.selectedNode = nil
+            }
         }
         .onReceive(inventory.$apps.dropFirst()) { _ in appSearchRevision &+= 1 }
-        .onChange(of: state.sidebarTab) { _ in searchIsActive = false }
-        .onChange(of: state.exploreView) { _ in searchIsActive = false }
-        .onChange(of: searchQuery) { searchIsActive = !$0.isEmpty }
-        .onChange(of: searchFocused) { if $0 { searchIsActive = true } }
-        .onReceive(NotificationCenter.default.publisher(for: .diskDoomSearchRequested)) { _ in
-            searchFocused = true; searchIsActive = true
+        .onReceive(state.$sidebarTab.dropFirst()) { _ in
+            state.searchText = ""
+            searchQuery = ""
         }
-        .onReceive(NotificationCenter.default.publisher(for: .diskDoomNotificationOpened)) { event in
-            switch event.object as? String {
-            case NotificationService.categoryScan: state.sidebarTab = .explore
-            case NotificationService.categoryCleanup: state.showCleanup = true
-            case NotificationService.categoryGamification: state.sidebarTab = .progress
-            case NotificationService.categoryMonitor: state.sidebarTab = .dupMonitor
-            default: state.sidebarTab = .storage
+        .onReceive(state.$exploreView.dropFirst()) { _ in
+            state.searchText = ""
+            searchQuery = ""
+        }
+        .task(id: searchKey) {
+            let key = searchKey
+            guard !key.query.isEmpty else {
+                searchResult = .empty
+                activeSearch = key
+                completedSearch = key
+                return
             }
+            if !requestedSearchInventory && inventory.apps.isEmpty && !inventory.isScanning {
+                requestedSearchInventory = true
+                inventory.scan()
+            }
+            let apps = inventory.apps.map {
+                SearchableApp(name: $0.name, bundleID: $0.bundleID,
+                              path: $0.bundlePath.isEmpty ? $0.bundleID : $0.bundlePath,
+                              bytes: $0.totalBytes)
+            }
+            let sections = AppState.SidebarTab.allCases.map { (id: $0.rawValue, title: $0.title) }
+            let views = AppState.ExploreView.allCases.map { (id: $0.rawValue, title: $0.title) }
+            let quick = GlobalSearch.find(query: key.query, records: [], root: nil,
+                                          apps: apps, sections: sections, visualizations: views)
+            guard !Task.isCancelled, searchKey == key else { return }
+            activeSearch = key
+            searchResult = quick
+            if key.query.count < 2 {
+                completedSearch = key
+                return
+            }
+            // Sections and apps are already shown. Delay the full index pass
+            // briefly so rapid typing doesn't start multiple large searches.
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let records = state.records
+            let root = state.scanRoot
+            let worker = Task.detached(priority: .userInitiated) {
+                GlobalSearch.find(query: key.query, records: records, root: root,
+                                  apps: apps, sections: sections, visualizations: views)
+            }
+            let found = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, searchKey == key else { return }
+            searchResult = found
+            completedSearch = key
         }
-        .onReceive(activity.$notices.dropFirst()) { notices in
-            guard let latest = notices.first, latest.category == NotificationService.categorySpaceAlert,
-                  latest.id != lastStorageAlertID else { return }
-            lastStorageAlertID = latest.id
-            state.banner = AppState.Banner(message: "\(latest.title) · \(latest.body)", actionTitle: "Storage Map", persistent: true)
-        }
-        .task(id: searchKey) { await performSearch(searchKey) }
     }
 
-    private func shell(_ metrics: CinematicMetrics) -> some View {
-        VStack(spacing: 0) {
-            masthead(metrics).frame(height: metrics.headerHeight)
-            HStack(spacing: 0) {
-                sidebar(metrics)
-                    .padding(.leading, 4)
-                    .frame(width: metrics.sidebar)
-                VStack(spacing: 0) {
-                    workspace(compact: metrics.compact)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: metrics.bodyHeight)
-                    if metrics.stacked && metrics.inspector {
-                        CinematicInspectorView(compact: true, stacked: true)
-                            .frame(height: metrics.stackedInspectorHeight)
+    // MARK: Sidebar (§36)
+
+    private var sidebar: some View {
+        List(selection: $state.sidebarTab) {
+            Section {
+                DiskDoomLogo(style: .sidebar, size: 28)
+                    .padding(.vertical, DesignTokens.Space.xs)
+            }
+            Section("Navigate") {
+                ForEach(AppState.SidebarTab.primary, id: \.self) { tab in
+                    let shortcut = ["explore": 1, "duplicates": 2, "applications": 3, "monitor": 4, "snapshots": 5][tab.rawValue] ?? 0
+                    Label {
+                        HStack {
+                            Text(tab.title)
+                            Spacer()
+                            if shortcut > 0 {
+                                Text("⌘\(shortcut)")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    } icon: {
+                        Image(systemName: tab.symbol)
+                    }
+                    .tag(tab)
+                }
+            }
+            Section("Progress") {
+                Button {
+                    state.sidebarTab = .progress
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "trophy.fill")
+                                .foregroundStyle(.yellow)
+                            Text("Level \(gamification.level) · \(gamification.title)")
+                                .font(.caption.weight(.medium))
+                            Spacer()
+                            Label("\(gamification.streak)", systemImage: "flame.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.secondary.opacity(0.18))
+                                Capsule()
+                                    .fill(Color.purple)
+                                    .frame(width: max(0, geometry.size.width * gamification.progressToNextLevel))
+                            }
+                        }
+                        .frame(height: 4)
+                        Text("\(gamification.xpToNextLevel.formatted()) XP to next level")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Section("Insights") {
+                ForEach(AppState.SidebarTab.insights, id: \.self) { tab in
+                    Label(tab.title, systemImage: tab.symbol)
+                        .tag(tab)
+                }
+            }
+            Section("Professional") {
+                ForEach(AppState.SidebarTab.professional, id: \.self) { tab in
+                    Label(tab.title, systemImage: tab.symbol)
+                        .tag(tab)
+                }
+            }
+            Section("Favorites") {
+                // These three were bare `Label`s with no `.tag(...)`, so they rendered
+                // exactly like the real navigation rows above but selected nothing and
+                // navigated nowhere — dead UI that read as broken. Now they are real
+                // buttons that route to the Folders tab.
+                favoriteShortcut("/Applications", symbol: "app.badge")
+                favoriteShortcut("~/Downloads", symbol: "tray.and.arrow.down")
+                favoriteShortcut("~/Library", symbol: "folder")
+            }
+            Section("Volumes") {
+                Text("\(topology.dataVolumeName) — \(topology.currentCapacity.availableValue.map { "\(ByteFormatting.format($0.usedBytes)) / \(ByteFormatting.format($0.totalBytes))" } ?? topology.currentCapacity.statusLabel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(topology.externals) { volume in
+                    HStack {
+                        Text("\(volume.name) — \(volume.capacity.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness).availableValue.map { "\(ByteFormatting.format($0.usedBytes)) / \(ByteFormatting.format($0.totalBytes))" } ?? volume.capacity.applyingFreshness(maxAge: DiskTopologyService.capacityFreshness).statusLabel)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if volume.isEjectable {
+                            Button {
+                                topology.eject(mountPath: volume.mountPath)
+                            } label: {
+                                Image(systemName: "eject")
+                            }
+                            .buttonStyle(.plain)
+                            .help("Eject \(volume.name)")
+                        }
                     }
                 }
-                if metrics.inspectorWidth > 0 {
-                    CinematicInspectorView(compact: metrics.compact)
-                        .padding(.trailing, 3)
-                        .frame(width: metrics.inspectorWidth)
-                }
             }
-            CinematicFooterBar(compact: metrics.compact, onActivity: { showActivity = true })
-                .frame(height: metrics.footerHeight)
-        }
-        .background(CinematicShellBacking())
-        .overlay { if !metrics.stacked { CinematicMountingDetails(compact: metrics.compact) } }
-    }
-
-    private func masthead(_ metrics: CinematicMetrics) -> some View {
-        HStack(spacing: 0) {
-            HStack {
-                // Window traffic lights remain real macOS controls, never
-                // decorative red/yellow/green circles pretending to work.
-                Spacer()
-                Button { navigationExpanded.toggle() } label: {
-                    Image(systemName: "sidebar.left").font(.system(size: 18))
+            Section("Scan Summary") {
+                Text("Target: \(state.scanTargetName)").font(.caption)
+                if let last = state.lastScanDate {
+                    Text("Last scan: \(last.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain).frame(width: 38, height: 38)
-                .accessibilityLabel("Toggle navigation").help("Toggle navigation")
-                Spacer().frame(width: metrics.compact ? 12 : 24)
-            }
-            .frame(width: metrics.sidebar)
-            if !metrics.stacked {
-                GeometryReader { geometry in
-                    ZStack(alignment: .topTrailing) {
-                        CinematicTelemetry().padding(.top, 26).padding(.leading, 7)
-                            .frame(width: geometry.size.width * 0.52, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        scanControl(compact: metrics.compact)
-                            .frame(width: max(170, geometry.size.width * 0.47), height: 78)
-                            .padding(.trailing, 9)
+                if coordinator.staleCache {
+                    Text("Results may be outdated").font(.caption).foregroundStyle(.orange)
+                }
+                if let root = state.scanRoot {
+                    Text("\(root.fileCount.formatted()) files · \(root.sizeString)").font(.caption).foregroundStyle(.secondary)
+                    if !state.skippedPaths.isEmpty {
+                        Text("\(state.skippedPaths.count) folders unreadable").font(.caption).foregroundStyle(.orange)
                     }
+                } else {
+                    Text("No scan yet").font(.caption).foregroundStyle(.tertiary)
                 }
             }
-            HStack(spacing: 10) {
-                if metrics.stacked {
-                    Button { scanAction() } label: { Image(systemName: state.scanPhase == .scanning ? "stop.fill" : "arrow.clockwise") }
-                        .buttonStyle(CinematicIconButtonStyle())
-                        .accessibilityLabel(state.scanPhase == .scanning ? "Cancel Scan" : "Scan")
+            Section {
+                Button {
+                    state.showCleanup = true
+                } label: {
+                    Label("\(state.cleanupItems.count) items · \(state.cleanupSizeSummary)", systemImage: "trash")
+                        .font(.caption)
                 }
-                searchField
-                HStack(spacing: 3) {
-                    Button { state.inspectorVisible.toggle() } label: { Image(systemName: "sidebar.right") }
-                        .buttonStyle(CinematicIconButtonStyle(selected: state.inspectorVisible && hasContextInspector))
-                        .disabled(!hasContextInspector).accessibilityLabel("Toggle inspector").help("Toggle inspector (⇧⌘I)")
-                    Button { state.showCleanup = true } label: { Image(systemName: "trash") }
-                        .buttonStyle(CinematicIconButtonStyle()).accessibilityLabel("Cleanup queue").help("Review cleanup queue")
-                    Button {
-                        state.saveSnapshotFromCurrentScan(label: "Manual"); state.sidebarTab = .snapshots
-                    } label: { Image(systemName: "camera") }
-                    .buttonStyle(CinematicIconButtonStyle()).disabled(state.scanRoot == nil)
-                    .accessibilityLabel("Save snapshot").help("Save snapshot (⇧⌘S)")
-                }
+                .buttonStyle(.plain)
+            } header: {
+                Text("Cleanup Queue")
             }
-            .padding(.top, metrics.compact ? 16 : 22)
-            .padding(.horizontal, metrics.compact ? 12 : 20)
-            .padding(.bottom, 10)
-            .frame(width: metrics.stacked ? nil : metrics.searchWidth)
-            .frame(maxWidth: metrics.stacked ? .infinity : nil)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(CinematicHeaderBacking().padding(.leading, -13))
         }
     }
 
-    private func scanControl(compact: Bool) -> some View {
-        Button(action: scanAction) {
-            HStack(spacing: 13) {
-                Image(systemName: state.scanPhase == .scanning ? "stop.fill" : "arrow.triangle.2.circlepath")
-                    .font(.system(size: 23, weight: .medium)).foregroundStyle(.white)
-                    .frame(width: 43, height: 43)
-                    .background(LinearGradient(colors: [Color(hex: 0xFFAD39), Color(hex: 0xFF4D11)], startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
-                    .shadow(color: DesignTokens.Palette.orange.opacity(0.5), radius: 9)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(state.scanPhase == .scanning ? "Cancel Scan" : "Scan").font(.system(size: 14, weight: .bold))
-                    Text(state.scanPhase == .scanning ? "Stop the current disk scan" : "Scan your disk for space usage")
-                        .font(.system(size: 10)).foregroundStyle(Color(hex: 0xACB3B9)).lineLimit(1)
-                }
-            }
-            .padding(.horizontal, compact ? 20 : 28).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
+    /// Sidebar row that jumps to the Folders tab. Uses a real `Button` (not a
+    /// bare `Label`) because the sidebar is a `List(selection:)`: an untagged
+    /// `Label` is selectable-looking but does nothing on click.
+    private func favoriteShortcut(_ title: String, symbol: String) -> some View {
+        Button {
+            state.sidebarTab = .folders
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.caption)
         }
         .buttonStyle(.plain)
-        .background(CinematicScanBacking())
-        .accessibilityLabel(state.scanPhase == .scanning ? "Cancel Scan" : "Scan")
-        .help("Scan your selected scope (⌘R)")
     }
 
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(Color(hex: 0x8CA2B2))
-            TextField("Search folders, files…", text: $searchQuery)
-                .accessibilityIdentifier("workspace.search")
-                .textFieldStyle(.plain).font(.system(size: 12)).focused($searchFocused)
-                .onSubmit { if activeSearch == searchKey, let hit = searchResult.hits.first { openSearchResult(hit) } }
-            if !searchQuery.isEmpty {
-                Button { searchQuery = "" } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain).accessibilityLabel("Clear search")
-            } else {
-                Text("⌘ K").font(.system(size: 10, design: .monospaced)).foregroundStyle(Color(hex: 0xB2C1CE)).fixedSize()
-            }
-        }
-        .padding(.horizontal, 11).frame(height: 39)
-        .background(Color(hex: 0x111922, opacity: 0.73), in: RoundedRectangle(cornerRadius: 9))
-        .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(Color(hex: 0x607181, opacity: 0.45), lineWidth: 1) }
-        .help("Search indexed files, folders, apps and commands (⌘K)")
-    }
+    // MARK: Detail content per tab + scan phase
 
-    private func sidebar(_ metrics: CinematicMetrics) -> some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { reader in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        CinematicBrand(compact: metrics.compact, iconOnly: !navigationExpanded)
-                            .padding(.top, 21).padding(.bottom, 34)
-                        navigationGroup("NAVIGATE", tabs: AppState.SidebarTab.primary, metrics: metrics)
-                        Rectangle().fill(Color(hex: 0x46535B, opacity: 0.41)).frame(height: 1)
-                            .padding(.horizontal, 5).padding(.top, 16).padding(.bottom, 17)
-                        navigationGroup("INSIGHTS", tabs: AppState.SidebarTab.insights, metrics: metrics)
-                        navigationGroup("MORE TOOLS", tabs: AppState.SidebarTab.tools, metrics: metrics).padding(.top, 18)
-                        navigationGroup("PROFESSIONAL", tabs: AppState.SidebarTab.professional, metrics: metrics).padding(.top, 18)
-                        if navigationExpanded {
-                            Text("FAVORITES").font(.system(size: 10, weight: .bold)).tracking(1)
-                                .foregroundStyle(Color(hex: 0xAAAFB4)).padding(.top, 18).padding(.bottom, 8)
-                            favorite("/Applications", symbol: "app")
-                            favorite("~/Downloads", symbol: "tray.and.arrow.down")
-                            favorite("~/Library", symbol: "folder")
-                            ForEach(topology.externals) { volume in
-                                HStack {
-                                    Text(volume.name).font(.caption).lineLimit(1)
-                                    Spacer()
-                                    if volume.isEjectable {
-                                        Button { topology.eject(mountPath: volume.mountPath) } label: { Image(systemName: "eject") }
-                                            .buttonStyle(.plain).accessibilityLabel("Eject \(volume.name)")
-                                    }
-                                }.padding(.vertical, 8)
-                            }
-                        }
-                    }.padding(.horizontal, metrics.compact ? 11 : 17).padding(.bottom, 23)
-                }
-                .onChange(of: state.sidebarTab) { tab in reader.scrollTo(tab, anchor: .center) }
-            }
-            HStack {
-                if navigationExpanded { Text("SYS / STORAGE").font(.system(size: 9, design: .monospaced)) }
-                Spacer(minLength: 0)
-                Button { state.showCleanup = true } label: {
-                    Label("\(state.cleanupItems.count)", systemImage: "trash")
-                }.buttonStyle(.plain).font(.system(size: 11))
-                    .accessibilityLabel("Cleanup queue, \(state.cleanupItems.count) items")
-            }
-            .foregroundStyle(Color(hex: 0x8896A2)).padding(14)
-            .overlay(alignment: .top) { Divider().padding(.horizontal, 17) }
-        }
-        .background(CinematicRegionBackground(region: .sidebar))
-        .overlay(alignment: .trailing) { Color(hex: 0x53738B, opacity: 0.45).frame(width: 1) }
-        .accessibilityElement(children: .contain).accessibilityLabel("Primary navigation")
-    }
-
-    private func navigationGroup(_ title: String, tabs: [AppState.SidebarTab], metrics: CinematicMetrics) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if navigationExpanded {
-                Text(title).font(.system(size: 10, weight: .bold)).tracking(1)
-                    .foregroundStyle(Color(hex: 0xAAAFB4)).padding(.horizontal, 8).padding(.bottom, 8)
-            }
-            ForEach(tabs, id: \.self) { tab in
-                Button { state.sidebarTab = tab; searchIsActive = false } label: {
-                    HStack(spacing: 11) {
-                        Image(systemName: tab.symbol).font(.system(size: 17)).frame(width: 18)
-                            .foregroundStyle(state.sidebarTab == tab ? Color(hex: 0xFFB64F) : Color(hex: 0x119FFF))
-                        if navigationExpanded {
-                            Text(tab.title).font(.system(size: metrics.compact ? 11 : 12, weight: .bold)).lineLimit(1)
-                            Spacer(minLength: 0)
-                            if let shortcut = AppState.SidebarTab.primary.firstIndex(of: tab) {
-                                Text("⌘\(shortcut + 1)").font(.system(size: 9, design: .monospaced))
-                                    .foregroundStyle(state.sidebarTab == tab ? .white : Color(hex: 0x73808B))
-                            }
-                        }
-                    }
-                    .foregroundStyle(state.sidebarTab == tab ? .white : Color(hex: 0xCAD4DC))
-                    .frame(maxWidth: .infinity, alignment: navigationExpanded ? .leading : .center)
-                }
-                .buttonStyle(CinematicNavigationStyle(selected: state.sidebarTab == tab, compact: metrics.compact))
-                .accessibilityLabel(tab.title).accessibilityIdentifier("navigation.\(tab.rawValue)")
-                .accessibilityAddTraits(state.sidebarTab == tab ? [.isSelected] : [])
-                .help(tab.title).id(tab)
-            }
-        }
-    }
-
-    private func favorite(_ path: String, symbol: String) -> some View {
-        Button {
-            state.folderSearchDestination = (path as NSString).expandingTildeInPath
-            state.sidebarTab = .folders; searchIsActive = false
-        } label: { Label(path, systemImage: symbol).font(.system(size: 11)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7) }
-            .buttonStyle(.plain)
-    }
-
-    private func workspace(compact: Bool) -> some View {
-        VStack(spacing: 0) {
-            if let banner = state.banner { statusBanner(banner) }
-            if state.limitedMode || !state.permissions.fdaGranted {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.fill").foregroundStyle(.orange)
-                    Text("Limited access · some folders may be unreadable")
-                    Spacer()
-                    Button("Grant Access") { state.permissions.openPrivacySettings() }.buttonStyle(.link)
-                }.font(.system(size: 11)).padding(.horizontal, 20).padding(.vertical, 6)
-                    .background(Color.orange.opacity(0.06))
-            }
-            detailContent(compact: compact)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background(CinematicRegionBackground(region: .workspace))
-        .overlay(alignment: .leading) { Color(hex: 0x6C95B9, opacity: 0.35).frame(width: 1) }
-        .overlay(alignment: .trailing) { Color(hex: 0x486576, opacity: 0.68).frame(width: 2) }
-        .overlay { if dropTargeted { dropOverlay } }
-        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                var directory: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue else { return }
-                DispatchQueue.main.async { state.startRealScan(root: url, label: url.lastPathComponent) }
-            }
-            return true
-        }
-    }
-
-    @ViewBuilder private func detailContent(compact: Bool) -> some View {
-        if searchIsActive && !searchKey.query.isEmpty {
-            GlobalSearchResultsView(query: searchKey.query, result: activeSearch == searchKey ? searchResult : .empty,
+    @ViewBuilder
+    private var detailContent: some View {
+        if !searchKey.query.isEmpty {
+            GlobalSearchResultsView(
+                query: searchKey.query, result: activeSearch == searchKey ? searchResult : .empty,
                 isSearching: completedSearch != searchKey,
                 scanLabel: state.scanRoot == nil ? nil : (state.indexedScanLabel ?? state.scanTargetName),
                 appsLoading: inventory.isScanning,
                 incompleteIndex: state.scanPhase == .scanning || !state.skippedPaths.isEmpty ||
                     (state.scanRoot != nil && state.records.isEmpty) || state.records.count >= 1_000_000,
-                onSelect: openSearchResult, onClear: { searchQuery = "" })
-        } else if state.sidebarTab == .explore {
-            exploreWorkspace(compact: compact)
+                onSelect: openSearchResult,
+                onClear: { searchQuery = "" })
+        } else if state.sidebarTab == .applications {
+            ApplicationsView()
+        } else if state.sidebarTab == .folders {
+            FolderExplorerView()
+        } else if state.sidebarTab == .progress {
+            GamificationView()
+        } else if state.sidebarTab == .dupMonitor {
+            DuplicateMonitorView()
+        } else if state.sidebarTab == .similar && state.scanPhase != .scanning && state.scanRoot == nil {
+            SimilarFilesView()
+        } else if state.scanPhase == .scanning {
+            ScanProgressView()
+        } else if state.scanPhase == .failed {
+            ScanFailedView()
+        } else if state.scanPhase == .idle && state.scanRoot == nil {
+            EmptyState(
+                symbol: "magnifyingglass",
+                title: "Ready to Scan",
+                message: "Select a target and start scanning to see where your disk space is going. Or drag a folder onto this window.",
+                actionTitle: "Start Scan (⌘R)",
+                action: { state.startScan() }
+            )
         } else {
-            switch state.sidebarTab {
-            case .explore: EmptyView()
+            Group {
+                switch state.sidebarTab {
+                case .explore:
+                VStack(spacing: 0) {
+                    OverviewStrip()
+                        .environmentObject(state)
+                        .environmentObject(topology)
+                    HStack(spacing: DesignTokens.Space.m) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(state.exploreView.title)
+                                .font(.headline)
+                            Text(state.exploreView.purpose)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Menu {
+                            ForEach(state.effectiveTopLevel.sorted { $0.sizeBytes > $1.sizeBytes }.prefix(12)) { node in
+                                Button {
+                                    state.selectedNode = node
+                                    state.inspectorVisible = true
+                                } label: {
+                                    Label("\(node.name) · \(node.sizeString)", systemImage: node.category.symbol)
+                                }
+                            }
+                        } label: {
+                            Label("Top folders", systemImage: "list.bullet")
+                        }
+                        .help("Quickly inspect the 12 largest top-level folders")
+                        Menu {
+                            ForEach(AppState.ExploreView.allCases, id: \.self) { view in
+                                Button {
+                                    state.exploreView = view
+                                } label: {
+                                    Label(view.title, systemImage: state.exploreView == view ? "checkmark" : view.symbol)
+                                }
+                            }
+                        } label: {
+                            Label("All 12 views", systemImage: "square.grid.2x2")
+                        }
+                        .help("Choose one of 12 disk visualizations")
+                    }
+                    .padding(.horizontal, DesignTokens.Space.m)
+                    .padding(.top, DesignTokens.Space.s)
+                    // 12-view switcher lives here (not the toolbar — a 12-segment
+                    // control doesn't fit window chrome at 1100pt).
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: DesignTokens.Space.xs) {
+                            ForEach(AppState.ExploreView.allCases, id: \.self) { view in
+                                Button {
+                                    withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
+                                        state.exploreView = view
+                                    }
+                                } label: {
+                                    Label(view.title, systemImage: view.symbol)
+                                        .font(.caption)
+                                        .padding(.horizontal, DesignTokens.Space.s)
+                                        .padding(.vertical, DesignTokens.Space.xs)
+                                        .background(state.exploreView == view ? Color.accentColor : Color.secondary.opacity(0.08))
+                                        .foregroundStyle(state.exploreView == view ? .white : .primary)
+                                        .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
+                                }
+                                .buttonStyle(.plain)
+                                .help(view.purpose)
+                                .accessibilityAddTraits(state.exploreView == view ? [.isSelected] : [])
+                            }
+                        }
+                        .padding(.horizontal, DesignTokens.Space.m)
+                        .padding(.vertical, DesignTokens.Space.xs)
+                    }
+                    Divider()
+                    Group {
+                        switch state.exploreView {
+                        case .treemap: TreemapView()
+                        case .sunburst: SunburstView()
+                        case .flame: FlameView()
+                        case .bubbles: BubblesView()
+                        case .mindMap: MindMapView()
+                        case .topSizes: TopSizesView()
+                        case .ageMap: AgeMapView()
+                        case .folderGrid: FolderGridView()
+                        case .radial: RadialView()
+                        case .icicle: IcicleView()
+                        case .treelist: TreelistView()
+                        case .extCloud: ExtCloudView()
+                        }
+                    }
+                    .id(state.scanRoot?.id)
+                }
             case .duplicates: DuplicatesView()
             case .similar: SimilarFilesView()
             case .dupMonitor: DuplicateMonitorView()
@@ -396,163 +565,393 @@ struct MainWindowView: View {
             case .developer: DeveloperWorkspaceView()
             case .pro3D: Pro3DCacheView()
             case .videoEditor: VideoEditorCacheView()
-            }
-        }
-    }
-
-    private func exploreWorkspace(compact: Bool) -> some View {
-        VStack(spacing: 0) {
-            CinematicOverviewStrip(compact: compact)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 5) {
-                    ForEach(AppState.ExploreView.allCases, id: \.self) { mode in
-                        Button { state.exploreView = mode } label: {
-                            Label(mode.title, systemImage: mode.symbol).labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(CinematicModeButtonStyle(selected: state.exploreView == mode))
-                        .accessibilityAddTraits(state.exploreView == mode ? [.isSelected] : [])
-                        .help(mode.purpose)
-                    }
-                }.padding(.horizontal, compact ? 11 : 20).padding(.vertical, 10)
-            }
-            .frame(height: 63)
-            .background(LinearGradient(colors: [Color(hex: 0x0F151B), Color(hex: 0x11161D)], startPoint: .top, endPoint: .bottom))
-            .overlay(alignment: .bottom) { Color(hex: 0x26333D).frame(height: 1) }
-            HStack(spacing: 10) {
-                Button("STORAGE") { state.selectedNode = state.scanRoot; visualizationReset &+= 1 }
-                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Color(hex: 0xA1B4C4))
-                    .help("Return to the current scan root")
-                if let root = state.scanRoot {
-                    Text("/ \(root.name)").font(.system(size: 11)).lineLimit(1).foregroundStyle(DesignTokens.Palette.text)
                 }
-                Spacer()
-                Text("Click to select · Double-click to open").font(.system(size: 10)).foregroundStyle(Color(hex: 0x727E87)).lineLimit(1)
-            }.padding(.horizontal, 26).frame(height: 34)
-            Group {
-                if state.scanPhase == .scanning { ScanProgressView() }
-                else if state.scanPhase == .failed { ScanFailedView() }
-                else if state.scanRoot == nil {
-                    EmptyState(symbol: "internaldrive", title: "Ready to Scan",
-                               message: "Choose a folder or disk to see its measured storage map. You can also drop a folder here.",
-                               actionTitle: "Start Scan (⌘R)", action: { state.startScan() })
-                } else { visualization }
             }
-            .id("\(state.scanRoot?.id.uuidString ?? "empty")-\(visualizationReset)")
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .id(state.sidebarTab) // identity per tab: transition animates on switch
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.985)))
         }
-    }
-
-    @ViewBuilder private var visualization: some View {
-        switch state.exploreView {
-        case .treemap: TreemapView()
-        case .sunburst: SunburstView()
-        case .flame: FlameView()
-        case .bubbles: BubblesView()
-        case .mindMap: MindMapView()
-        case .topSizes: TopSizesView()
-        case .ageMap: AgeMapView()
-        case .folderGrid: FolderGridView()
-        case .radial: RadialView()
-        case .icicle: IcicleView()
-        case .treelist: TreelistView()
-        case .extCloud: ExtCloudView()
-        }
-    }
-
-    private func scanAction() { state.scanPhase == .scanning ? state.cancelScan() : state.startScan() }
-
-    private var dropOverlay: some View {
-        RoundedRectangle(cornerRadius: 14).strokeBorder(DesignTokens.Palette.cyan, style: StrokeStyle(lineWidth: 2, dash: [10, 6]))
-            .background(DesignTokens.Palette.app.opacity(0.94))
-            .overlay { Label("Drop folder to scan", systemImage: "folder.badge.plus").font(.title3) }.padding(24)
-    }
-
-    private func statusBanner(_ banner: AppState.Banner) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: banner.persistent ? "exclamationmark.triangle" : "info.circle").foregroundStyle(banner.persistent ? .orange : DesignTokens.Palette.cyan)
-            Text(banner.message).font(.system(size: 12))
-            Spacer()
-            Button(banner.actionTitle) {
-                switch banner.actionTitle {
-                case "Show Trash": state.showTrashInFinder()
-                case "Activate": state.showLicense = true
-                case "Details": if banner.message.hasPrefix("Partial scan") { showCoverage = true } else { state.sidebarTab = .snapshots }
-                case "Storage Map": state.sidebarTab = .storage; state.banner = nil
-                default: state.banner = nil
-                }
-            }.buttonStyle(.link)
-            Button { state.banner = nil } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
-                .buttonStyle(.plain).accessibilityLabel("Dismiss notification")
-        }
-        .padding(.horizontal, 16).padding(.vertical, 6)
-        .background(DesignTokens.Palette.raised)
-        .onAppear { state.dismissBannerAfterDelay() }
-    }
-
-    private var coverageSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Scan Coverage").font(.title2.bold()); Spacer()
-                Button("Done") { showCoverage = false }.keyboardShortcut(.cancelAction)
-            }
-            Text("\(state.skippedPaths.count) folders were unreadable. Mapped sizes are lower bounds.").foregroundStyle(.secondary)
-            List(state.skippedPaths, id: \.self) { Label($0, systemImage: "lock").font(.callout.monospaced()).textSelection(.enabled) }
-            Button("Open Full Disk Access Settings") { state.permissions.openPrivacySettings() }
-        }.padding(25).frame(width: 620, height: 480).background(DesignTokens.Palette.panel)
-    }
-
-    private func performSearch(_ key: SearchKey) async {
-        guard !key.query.isEmpty else { searchResult = .empty; activeSearch = key; completedSearch = key; return }
-        if !requestedSearchInventory && inventory.apps.isEmpty && !inventory.isScanning {
-            requestedSearchInventory = true; inventory.scan()
-        }
-        let apps = inventory.apps.map { SearchableApp(name: $0.name, bundleID: $0.bundleID,
-            path: $0.bundlePath.isEmpty ? $0.bundleID : $0.bundlePath, bytes: $0.totalBytes) }
-        let sections = AppState.SidebarTab.allCases.map { (id: $0.rawValue, title: $0.title) }
-        let views = AppState.ExploreView.allCases.map { (id: $0.rawValue, title: $0.title) }
-        let quick = GlobalSearch.find(query: key.query, records: [], root: nil, apps: apps, sections: sections, visualizations: views)
-        guard !Task.isCancelled, searchKey == key else { return }
-        activeSearch = key; searchResult = quick
-        guard key.query.count >= 2 else { completedSearch = key; return }
-        try? await Task.sleep(for: .milliseconds(120))
-        guard !Task.isCancelled else { return }
-        let records = state.records, root = state.scanRoot
-        let worker = Task.detached(priority: .userInitiated) {
-            GlobalSearch.find(query: key.query, records: records, root: root, apps: apps, sections: sections, visualizations: views)
-        }
-        let found = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-        guard !Task.isCancelled, searchKey == key else { return }
-        searchResult = found; completedSearch = key
     }
 
     private func openSearchResult(_ hit: GlobalSearchHit) {
         state.searchText = ""
         switch hit.kind {
-        case .section: if let tab = AppState.SidebarTab(rawValue: hit.target) { state.sidebarTab = tab }
+        case .section:
+            if let tab = AppState.SidebarTab(rawValue: hit.target) { state.sidebarTab = tab }
         case .visualization:
-            if let mode = AppState.ExploreView(rawValue: hit.target) { state.exploreView = mode; state.sidebarTab = .explore }
+            if let view = AppState.ExploreView(rawValue: hit.target) {
+                state.exploreView = view
+                state.sidebarTab = .explore
+            }
         case .application:
             if let app = inventory.apps.first(where: { $0.bundlePath == hit.target || $0.bundleID == hit.target }) {
                 state.selectedApp = app
                 if !app.bundlePath.isEmpty {
-                    state.selectedNode = ScanNode(name: app.name, path: app.bundlePath, sizeBytes: app.totalBytes,
-                                                  category: .applications, fileCount: max(app.artifacts.count, 1))
+                    state.selectedNode = ScanNode(name: app.name, path: app.bundlePath,
+                                                  sizeBytes: app.totalBytes, category: .applications,
+                                                  fileCount: max(app.artifacts.count, 1))
                     state.inspectorVisible = true
                 }
                 state.sidebarTab = .applications
             }
         case .folder, .file:
-            state.folderSearchDestination = hit.kind == .folder ? hit.target : URL(fileURLWithPath: hit.target).deletingLastPathComponent().path
+            state.folderSearchDestination = hit.kind == .folder
+                ? hit.target : URL(fileURLWithPath: hit.target).deletingLastPathComponent().path
             if hit.kind == .file {
-                state.selectedNode = ScanNode(name: hit.title, path: hit.target, sizeBytes: hit.bytes ?? 0,
+                state.selectedNode = ScanNode(name: hit.title, path: hit.target,
+                                              sizeBytes: hit.bytes ?? 0,
                                               category: hit.category ?? .other, fileCount: 1)
-            } else { state.selectedNode = nil }
+                state.inspectorVisible = true
+            } else {
+                state.selectedNode = nil
+            }
             state.sidebarTab = .folders
         }
-        searchQuery = ""; searchIsActive = false
+        searchQuery = ""
+    }
+
+    private var statusBar: some View {
+        HStack {
+            if let root = state.scanRoot {
+                Text("\(root.fileCount.formatted()) files scanned · \(root.sizeString) mapped in \(String(format: "%.1f", state.scanElapsed))s")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("No scan yet").font(.caption2).foregroundStyle(.tertiary)
+            }
+            Spacer()
+            if coordinator.phase != .complete {
+                Text(coordinator.currentJobName.isEmpty ? "Preparing…" : coordinator.currentJobName)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if let node = state.selectedNode {
+                Text("Selection: \(node.name)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.m)
+        .padding(.vertical, DesignTokens.Space.xs)
     }
 }
 
-extension Notification.Name {
-    static let diskDoomSearchRequested = Notification.Name("DiskDoom.searchRequested")
+// MARK: - Overview strip: live disk widget on the Explore tab (all real data)
+
+private struct OverviewStrip: View {
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var topology: DiskTopologyService
+
+    @ViewBuilder
+    private var diskRing: some View {
+        if let capacity = topology.currentCapacity.availableValue {
+            let percent = capacity.usedPercent
+            ZStack {
+                Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 6)
+                Circle()
+                    .trim(from: 0, to: percent / 100)
+                    .stroke(percent > 90 ? Color.red : percent > 75 ? Color.orange : Color.green,
+                            style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("\(Int(percent))")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+            }
+            .frame(width: 46, height: 46)
+            .accessibleProgress(value: percent / 100,
+                label: "Disk usage: \(ByteFormatting.format(capacity.usedBytes)) used of \(ByteFormatting.format(capacity.totalBytes))")
+        } else {
+            ZStack {
+                Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 6)
+                Text("—").font(.caption2)
+            }
+            .frame(width: 46, height: 46)
+            .accessibilityLabel("Disk usage: \(topology.currentCapacity.statusLabel)")
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Space.m) {
+            // Disk usage ring.
+            HStack(spacing: DesignTokens.Space.s) {
+                diskRing
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(topology.dataVolumeName).font(.caption.weight(.semibold))
+                    Text(topology.currentCapacity.availableValue.map { "\(ByteFormatting.format($0.freeBytes)) free" } ?? topology.currentCapacity.statusLabel)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    if let date = topology.currentCapacity.measuredAt {
+                        Text("Measured \(date.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            Divider().frame(height: 34)
+            // Largest folder from the real scan.
+            if let biggest = state.effectiveTopLevel.max(by: { $0.sizeBytes < $1.sizeBytes }), biggest.sizeBytes > 0 {
+                stat(icon: "folder.fill", tint: biggest.category.color,
+                     label: "Biggest", value: "\(biggest.name) · \(biggest.sizeString)")
+            }
+            // Reclaimable (staged queue or cleanable categories).
+            if let root = state.scanRoot {
+                let cleanable = root.children
+                    .filter { $0.category == .caches || $0.category == .logs || $0.category == .stale }
+                    .reduce(Int64(0)) { $0 + $1.sizeBytes }
+                stat(icon: "sparkles", tint: .purple,
+                     label: "Cleanable", value: ByteFormatting.format(cleanable))
+            }
+            // Last scan freshness.
+            if let last = state.lastScanDate {
+                stat(icon: "clock.arrow.circlepath", tint: .blue,
+                     label: "Last scan", value: last.formatted(.relative(presentation: .named)))
+            }
+            Spacer()
+            // Quick actions.
+            HStack(spacing: DesignTokens.Space.s) {
+                Button {
+                    state.sidebarTab = .smartClean
+                } label: {
+                    Label("Smart Clean", systemImage: "wand.and.stars")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button {
+                    state.showCleanup = true
+                } label: {
+                    Label("Queue (\(state.cleanupItems.count))", systemImage: "trash")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(state.cleanupItems.isEmpty)
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.m)
+        .padding(.vertical, DesignTokens.Space.s)
+        .background(.quaternary.opacity(0.35))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func stat(icon: String, tint: Color, label: String, value: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.caption2).foregroundStyle(.secondary)
+                Text(value).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle)
+            }
+        }
+        .help(value)
+    }
+}
+
+// MARK: - §34 In-app notification banner (auto-dismiss 8s)
+
+private struct NotificationBannerView: View {
+    @EnvironmentObject var state: AppState
+    let banner: AppState.Banner
+
+    var body: some View {
+        HStack {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text(banner.message)
+                .font(.callout)
+            Spacer()
+            Button(banner.actionTitle) {
+                switch banner.actionTitle {
+                case "Show Trash": state.showTrashInFinder()
+                case "Activate": state.showLicense = true
+                case "Details": state.sidebarTab = .snapshots
+                default: state.banner = nil
+                }
+            }
+            .buttonStyle(.link)
+            .font(.callout)
+            Button {
+                state.banner = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, DesignTokens.Space.m)
+        .padding(.vertical, DesignTokens.Space.s)
+        .background(.background)
+        .onAppear { state.dismissBannerAfterDelay() }
+    }
+}
+
+// MARK: - Inspector (§13 file/folder + §14 application)
+
+private struct InspectorView: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.m) {
+                HStack {
+                    Text("Inspector").font(.headline)
+                    Spacer()
+                    Button {
+                        withAnimation(reduceMotion ? nil : DesignTokens.Motion.navigation) {
+                            state.inspectorVisible = false
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close Inspector")
+                    .accessibilityLabel("Close Inspector")
+                }
+                if let node = state.selectedNode {
+                    HStack(spacing: DesignTokens.Space.s) {
+                        Image(systemName: node.category.symbol)
+                            .font(.title)
+                            .foregroundStyle(node.category.color)
+                        VStack(alignment: .leading) {
+                            Text(node.name).font(.title3.weight(.semibold))
+                            Text(node.path)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    specRow("Total Size", value: node.sizeString)
+                    if node.isSyntheticAggregate {
+                        Label("Grouped scan result, not a real folder. Open its parent to inspect individual files.", systemImage: "square.stack.3d.up")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if node.isPartial {
+                        Label("Size is a lower bound; some contents could not be measured.", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    if node.isCollapsed, let reason = node.collapseReason {
+                        Text("▸ Collapsed: \(reason) — double-click to expand")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    if let physical = node.physicalBytes {
+                        specRow("On Disk", value: physical.fileSizeString)
+                        let saved = node.sizeBytes - physical
+                        if saved > 0 {
+                            specRow("APFS Savings", value: saved.fileSizeString)
+                        }
+                    }
+                    specRow("Files", value: node.fileCount.formatted())
+                    if let modified = node.modified {
+                        specRow("Modified", value: modified.formatted(date: .abbreviated, time: .omitted))
+                    }
+                    specRow("Category", value: node.category.label)
+                    if let app = state.selectedApp, app.name == node.name || app.bundlePath == node.path {
+                        // §14 real application breakdown.
+                        specRow("Bundle Size", value: app.bundleBytes.fileSizeString)
+                        specRow("Artifacts Size", value: app.artifactBytes.fileSizeString)
+                        Text("Artifacts (\(app.artifacts.count))").font(.headline)
+                        ForEach(app.artifacts.prefix(10), id: \.path) { artifact in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(shortInspectorPath(artifact.path)).font(.caption).lineLimit(1).truncationMode(.middle)
+                                    Text(artifact.kind).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(artifact.bytes.fileSizeString)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                Button("Stage") {
+                                    state.stage(source: "Inspector", path: artifact.path, bytes: artifact.bytes)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                            }
+                        }
+                        HStack {
+                            Button(app.isStale ? "Remove Leftovers" : "Uninstall…") {
+                                state.uninstallApp = app
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                            .controlSize(.small)
+                            Button("Clean Artifacts") {
+                                for artifact in app.artifacts {
+                                    state.stage(source: "Inspector", path: artifact.path, bytes: artifact.bytes)
+                                }
+                                state.showCleanup = true
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(app.artifacts.isEmpty)
+                        }
+                    }
+                    if !node.children.isEmpty {
+                        Text("Breakdown (\(node.children.count) items)").font(.headline)
+                        ForEach(node.children.sorted { $0.sizeBytes > $1.sizeBytes }, id: \.id) { child in
+                            HStack {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(child.category.color)
+                                    .frame(width: 10, height: 10)
+                                Text(child.name).font(.caption).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                Text(child.sizeString)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { state.selectedNode = child }
+                            .help(child.path)
+                        }
+                    }
+                    if node.isActionable {
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.selectFile((node.path as NSString).expandingTildeInPath, inFileViewerRootedAtPath: "")
+                        }
+                        .buttonStyle(.bordered)
+                        Button("Stage for Cleanup") {
+                            // Re-measure directories rather than present partial scan
+                            // totals as a verified cleanup estimate.
+                            state.stage(source: "Inspector", path: node.path,
+                                        bytes: node.isPartial ? -1 : node.sizeBytes)
+                        }
+                        .accentCTA()
+                    }
+                } else {
+                    VStack(spacing: DesignTokens.Space.m) {
+                        Spacer()
+                        Image(systemName: "square.dashed")
+                            .font(.system(size: 48))
+                            .foregroundStyle(.tertiary)
+                        Text("App: None")
+                            .font(.title3.weight(.semibold))
+                        Text("— Select an item to see its detail")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .padding(DesignTokens.Space.m)
+        }
+    }
+
+    private func specRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.caption.monospacedDigit())
+        }
+    }
+
+    private func shortInspectorPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) { return "~" + path.dropFirst(home.count) }
+        return path
+    }
 }

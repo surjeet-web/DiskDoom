@@ -27,8 +27,8 @@ struct WelcomeView: View {
                 .frame(maxWidth: 420)
                 .opacity(appeared ? 1 : 0)
             VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-                Label("Measured file sizes, with scan coverage shown", systemImage: "bolt.fill")
-                Label("File analysis runs locally on your Mac", systemImage: "lock.fill")
+                Label("Fast — 2M files in ~10s", systemImage: "bolt.fill")
+                Label("On-device — nothing leaves your Mac", systemImage: "lock.fill")
                 Label("Smart — duplicates, stale caches, hidden leftovers", systemImage: "sparkles")
             }
             .font(.callout)
