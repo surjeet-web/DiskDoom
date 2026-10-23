@@ -70,14 +70,14 @@ private struct TreelistRow: View {
             }
             Spacer()
             RoundedRectangle(cornerRadius: 3)
-                .fill(node.category.color.opacity(0.7))
+                .fill(node.visualColor.opacity(0.8))
                 .frame(width: 100 * CGFloat(node.sizeBytes) / CGFloat(max(maxVisibleBytes, 1)), height: 8)
             Text(node.sizeString)
                 .font(.callout.monospacedDigit())
                 .frame(width: 80, alignment: .trailing)
         }
         .contentShape(Rectangle())
-        .background(state.selectedNode?.id == node.id ? Color.accentColor.opacity(0.12) : .clear)
+        .background(state.selectedNode?.id == node.id ? node.visualColor.opacity(0.18) : .clear)
         // Double-tap listed first so it can claim the second tap; ordering a
         // single tap ahead of it made drill/expand unreachable on real rows.
         .onTapGesture(count: 2) {

@@ -139,8 +139,8 @@ private struct TreemapCell: View {
             RoundedRectangle(cornerRadius: 5)
                 .fill(
                     LinearGradient(
-                        colors: [node.category.color.opacity(isSelected || isHovered ? 0.98 : 0.82),
-                                 node.category.color.opacity(isSelected || isHovered ? 0.80 : 0.58)],
+                        colors: [node.visualColor.opacity(isSelected || isHovered ? 0.98 : 0.88),
+                                 node.visualColor.opacity(isSelected || isHovered ? 0.82 : 0.62)],
                         startPoint: .top, endPoint: .bottom)
                 )
                 .overlay(
@@ -149,10 +149,15 @@ private struct TreemapCell: View {
                 )
             if showLabel {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(node.name)
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Image(systemName: node.category.symbol)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.9))
+                        Text(node.name)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
                     Text(node.sizeString)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.white.opacity(0.9))

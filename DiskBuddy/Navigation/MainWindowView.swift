@@ -458,6 +458,10 @@ struct MainWindowView: View {
                         .environmentObject(state)
                         .environmentObject(topology)
                     HStack(spacing: DesignTokens.Space.m) {
+                        Image(systemName: state.exploreView.symbol)
+                            .font(.title3)
+                            .foregroundStyle(state.exploreView.tint)
+                            .frame(width: 26)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(state.exploreView.title)
                                 .font(.headline)
@@ -504,13 +508,21 @@ struct MainWindowView: View {
                                         state.exploreView = view
                                     }
                                 } label: {
-                                    Label(view.title, systemImage: view.symbol)
-                                        .font(.caption)
-                                        .padding(.horizontal, DesignTokens.Space.s)
-                                        .padding(.vertical, DesignTokens.Space.xs)
-                                        .background(state.exploreView == view ? Color.accentColor : Color.secondary.opacity(0.08))
-                                        .foregroundStyle(state.exploreView == view ? .white : .primary)
-                                        .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
+                                    HStack(spacing: 5) {
+                                        Image(systemName: view.symbol)
+                                            .foregroundStyle(state.exploreView == view ? view.tint : view.tint.opacity(0.85))
+                                        Text(view.title)
+                                    }
+                                    .font(.caption)
+                                    .padding(.horizontal, DesignTokens.Space.s)
+                                    .padding(.vertical, DesignTokens.Space.xs)
+                                    .background(state.exploreView == view ? view.tint.opacity(0.24) : Color.secondary.opacity(0.08))
+                                    .foregroundStyle(.primary)
+                                    .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: DesignTokens.Radius.s)
+                                            .strokeBorder(state.exploreView == view ? view.tint : .clear, lineWidth: 1.5)
+                                    }
                                 }
                                 .buttonStyle(.plain)
                                 .help(view.purpose)
@@ -520,6 +532,11 @@ struct MainWindowView: View {
                         .padding(.horizontal, DesignTokens.Space.m)
                         .padding(.vertical, DesignTokens.Space.xs)
                     }
+                    LinearGradient(colors: DesignTokens.Spectrum.colors,
+                                   startPoint: .leading, endPoint: .trailing)
+                        .frame(height: 2)
+                        .opacity(0.65)
+                        .accessibilityHidden(true)
                     Divider()
                     Group {
                         switch state.exploreView {

@@ -108,7 +108,7 @@ struct RadialView: View {
                     p.addArc(center: center, radius: outer, startAngle: Angle(radians: sector.end), endAngle: Angle(radians: sector.start), clockwise: true)
                     p.closeSubpath()
                 },
-                with: .color(sector.node.category.color.opacity(state.selectedNode?.id == sector.node.id ? 1 : 0.8)))
+                with: .color(sector.node.visualColor.opacity(state.selectedNode?.id == sector.node.id ? 1 : 0.85)))
         }
     }
 

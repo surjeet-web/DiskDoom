@@ -144,11 +144,11 @@ struct MindMapView: View {
             }
             .padding(DesignTokens.Space.s)
             .frame(width: width)
-            .background(state.selectedNode?.id == node.id ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08))
+            .background(state.selectedNode?.id == node.id ? node.visualColor.opacity(0.20) : Color.secondary.opacity(0.08))
             .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
-                    .stroke(state.selectedNode?.id == node.id ? Color.accentColor : .clear, lineWidth: 2)
+                    .stroke(state.selectedNode?.id == node.id ? node.visualColor : .clear, lineWidth: 2)
             )
         }
         .buttonStyle(.plain)

@@ -35,7 +35,7 @@ struct SunburstView: View {
                                 p.addArc(center: center, radius: midR, startAngle: Angle(radians: end), endAngle: Angle(radians: start), clockwise: true)
                                 p.closeSubpath()
                             },
-                            with: .color(node.category.color.opacity(node.id == hoveredID ? 1 : 0.85))
+                            with: .color(node.visualColor.opacity(node.id == hoveredID ? 1 : 0.85))
                         )
                         // Outer ring: children (or the node itself if leaf).
                         let outer = node.children.isEmpty ? [node] : node.children
@@ -50,7 +50,7 @@ struct SunburstView: View {
                                     p.addArc(center: center, radius: outerR, startAngle: Angle(radians: oEnd), endAngle: Angle(radians: oStart), clockwise: true)
                                     p.closeSubpath()
                                 },
-                                with: .color(child.category.color.opacity(child.id == hoveredID ? 1 : 0.7))
+                                with: .color(child.visualColor.opacity(child.id == hoveredID ? 1 : 0.7))
                             )
                             oStart = oEnd
                         }

@@ -73,6 +73,15 @@ struct ScanNode: Identifiable, Hashable, Codable, Sendable {
     /// (staging it used to trash the whole parent folder).
     var isActionable: Bool { !isSyntheticAggregate && !path.isEmpty }
 
+    /// Stable, folder-specific hue for explorer marks. Category stays the
+    /// semantic encoding (icons and the legend); this hue only prevents every
+    /// sibling in the same category from collapsing into one color. Synthetic
+    /// roll-ups keep the neutral category color because they are not folders.
+    var visualColor: Color {
+        guard isActionable else { return category.color }
+        return DesignTokens.Spectrum.color(for: path)
+    }
+
     init(id: UUID = UUID(), name: String, path: String, sizeBytes: Int64, category: NodeCategory, fileCount: Int, children: [ScanNode] = [], modified: Date? = nil, physicalBytes: Int64? = nil, isCollapsed: Bool = false, collapseReason: String? = nil, isSyntheticAggregate: Bool = false, isPartial: Bool = false) {
         self.id = id
         self.name = name

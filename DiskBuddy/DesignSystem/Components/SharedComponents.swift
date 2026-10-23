@@ -87,8 +87,8 @@ struct CategoryLegend: View {
         HStack(spacing: DesignTokens.Space.s) {
             ForEach(categories, id: \.self) { category in
                 HStack(spacing: DesignTokens.Space.xs) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(category.color)
+                    Image(systemName: category.symbol)
+                        .foregroundStyle(category.color)
                         .frame(width: 16, height: 16)
                     Text(category.label)
                         .font(.callout)

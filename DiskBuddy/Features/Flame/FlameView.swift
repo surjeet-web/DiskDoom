@@ -58,7 +58,7 @@ struct FlameView: View {
                                     state.selectedNode = node
                                 } label: {
                                     RoundedRectangle(cornerRadius: 3)
-                                        .fill(node.category.color.opacity(state.selectedNode?.id == node.id ? 1 : 0.8))
+                                        .fill(node.visualColor.opacity(state.selectedNode?.id == node.id ? 1 : 0.85))
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 3)
                                                 .stroke(state.selectedNode?.id == node.id ? .white : .clear, lineWidth: 2)
@@ -81,7 +81,7 @@ struct FlameView: View {
                                 .lineLimit(1)
                             Spacer()
                             RoundedRectangle(cornerRadius: 3)
-                                .fill(node.category.color.opacity(0.7))
+                                .fill(node.visualColor.opacity(0.75))
                                 .frame(width: 120 * CGFloat(node.sizeBytes) / CGFloat(maxVisibleBytes), height: 10, alignment: .leading)
                             Text(node.sizeString)
                                 .font(.callout.monospacedDigit())

@@ -130,6 +130,26 @@ final class AppState: ObservableObject {
             }
         }
 
+        /// One hue per visualization so the Explore tab reads as a spectrum
+        /// rather than a single blue control strip. The label and SF Symbol
+        /// remain the primary identifiers; the hue is reinforcement only.
+        var tint: Color {
+            switch self {
+            case .treemap: return DesignTokens.Spectrum.color(at: 0)
+            case .sunburst: return DesignTokens.Spectrum.color(at: 3)
+            case .flame: return DesignTokens.Spectrum.color(at: 11)
+            case .bubbles: return DesignTokens.Spectrum.color(at: 7)
+            case .mindMap: return DesignTokens.Spectrum.color(at: 1)
+            case .topSizes: return DesignTokens.Spectrum.color(at: 4)
+            case .ageMap: return DesignTokens.Spectrum.color(at: 9)
+            case .folderGrid: return DesignTokens.Spectrum.color(at: 8)
+            case .radial: return DesignTokens.Spectrum.color(at: 10)
+            case .icicle: return DesignTokens.Spectrum.color(at: 5)
+            case .treelist: return DesignTokens.Spectrum.color(at: 6)
+            case .extCloud: return DesignTokens.Spectrum.color(at: 2)
+            }
+        }
+
         var purpose: String {
             switch self {
             case .treemap: return "Compare folder sizes as proportional tiles."

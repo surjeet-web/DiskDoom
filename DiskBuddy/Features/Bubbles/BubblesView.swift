@@ -40,7 +40,7 @@ struct BubblesView: View {
                             } label: {
                                 ZStack {
                                     Circle()
-                                        .fill(node.category.color.opacity(state.selectedNode?.id == node.id ? 1 : 0.8))
+                                        .fill(node.visualColor.opacity(state.selectedNode?.id == node.id ? 1 : 0.85))
                                         .frame(width: diameter, height: diameter)
                                         .overlay(Circle().stroke(state.selectedNode?.id == node.id ? .white : .clear, lineWidth: 2))
                                     if diameter > 60 {

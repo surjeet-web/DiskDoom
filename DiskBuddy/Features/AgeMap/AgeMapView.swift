@@ -44,7 +44,7 @@ struct AgeMapView: View {
                                     }
                                 }
                                 .padding(DesignTokens.Space.s)
-                                .background(selectedBucket?.id == bucket.id ? Color.accentColor.opacity(0.1) : .clear)
+                                .background(selectedBucket?.id == bucket.id ? bucket.color.opacity(0.16) : .clear)
                                 .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
                             }
                             .buttonStyle(.plain)

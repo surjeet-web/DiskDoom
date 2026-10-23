@@ -71,6 +71,7 @@ struct ExtCloudView: View {
                                 VStack(spacing: 2) {
                                     Text(group.ext)
                                         .font(.system(size: 11 + 13 * scale, weight: .semibold))
+                                        .foregroundStyle(DesignTokens.Spectrum.color(for: group.ext))
                                         .lineLimit(1)
                                     Text(group.bytes.fileSizeString)
                                         .font(.caption2.monospacedDigit())
@@ -78,11 +79,12 @@ struct ExtCloudView: View {
                                 }
                                 .padding(DesignTokens.Space.s)
                                 .frame(minWidth: 80)
-                                .background(selectedExt == group.ext ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.06))
+                                .background(DesignTokens.Spectrum.color(for: group.ext)
+                                    .opacity(selectedExt == group.ext ? 0.30 : 0.14))
                                 .clipShape(.rect(cornerRadius: DesignTokens.Radius.s))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: DesignTokens.Radius.s)
-                                        .stroke(selectedExt == group.ext ? Color.accentColor : .clear, lineWidth: 2))
+                                        .stroke(selectedExt == group.ext ? DesignTokens.Spectrum.color(for: group.ext) : .clear, lineWidth: 2))
                             }
                             .buttonStyle(.plain)
                             .help("\(group.ext): \(group.bytes.fileSizeString) across \(group.files.formatted()) files")

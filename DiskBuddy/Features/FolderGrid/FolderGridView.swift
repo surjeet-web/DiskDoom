@@ -44,24 +44,24 @@ struct FolderGridView: View {
                                 .lineLimit(1)
                             Text(node.sizeString)
                                 .font(.caption.monospacedDigit())
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(node.category.color)
                             Text("\(node.fileCount.formatted()) files")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             GeometryReader { barProxy in
                                 RoundedRectangle(cornerRadius: 2)
-                                    .fill(node.category.color.opacity(0.7))
+                                    .fill(node.visualColor.opacity(0.8))
                                     .frame(width: barProxy.size.width * CGFloat(node.sizeBytes) / CGFloat(max(current.sizeBytes, 1)))
                             }
                             .frame(height: 6)
                         }
                         .padding(DesignTokens.Space.m)
                         .frame(height: 140)
-                        .background(state.selectedNode?.id == node.id ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06))
+                        .background(state.selectedNode?.id == node.id ? node.visualColor.opacity(0.18) : Color.secondary.opacity(0.06))
                         .clipShape(.rect(cornerRadius: DesignTokens.Radius.m))
                         .overlay(
                             RoundedRectangle(cornerRadius: DesignTokens.Radius.m)
-                                .stroke(state.selectedNode?.id == node.id ? Color.accentColor : .clear, lineWidth: 2)
+                                .stroke(state.selectedNode?.id == node.id ? node.visualColor : .clear, lineWidth: 2)
                         )
                         .contentShape(Rectangle())
                         .onTapGesture { state.selectedNode = node }

@@ -61,7 +61,7 @@ struct IcicleView: View {
                                             .foregroundStyle(.white.opacity(0.85))
                                     }
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .background(node.category.color.opacity(state.selectedNode?.id == node.id ? 1 : 0.8))
+                                    .background(node.visualColor.opacity(state.selectedNode?.id == node.id ? 1 : 0.85))
                                     .clipShape(.rect(cornerRadius: 4))
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 4)

@@ -36,6 +36,44 @@ enum DesignTokens {
     }
 }
 
+// MARK: - Explore spectrum
+//
+// A fixed, deterministic multi-hue palette for explorer chrome and file-kind
+// chips. Every use is paired with a label, icon or numeric value, so color is
+// never the only way to distinguish two states.
+
+extension DesignTokens {
+    enum Spectrum {
+        static let colors: [Color] = [
+            Color(hex: 0x4C9FFF), // azure
+            Color(hex: 0xB48CFF), // violet
+            Color(hex: 0xF06BC8), // magenta
+            Color(hex: 0xFF9F45), // orange
+            Color(hex: 0xFFD166), // amber
+            Color(hex: 0xA8E063), // lime
+            Color(hex: 0x4ADE80), // green
+            Color(hex: 0x2DD4BF), // teal
+            Color(hex: 0x22D3EE), // cyan
+            Color(hex: 0xFF7A8A), // rose
+            Color(hex: 0x818CF8), // indigo
+            Color(hex: 0xFF8A65)  // coral
+        ]
+
+        static func color(at index: Int) -> Color {
+            let count = colors.count
+            return colors[((index % count) + count) % count]
+        }
+
+        /// Stable across launches, unlike `String.hashValue`, so a given file
+        /// extension keeps the same chip color between sessions.
+        static func color(for key: String) -> Color {
+            var total = 0
+            for scalar in key.unicodeScalars { total = (total &* 31 &+ Int(scalar.value)) & 0x7FFF_FFFF }
+            return color(at: total)
+        }
+    }
+}
+
 // MARK: - Category colors (spec §05 treemap color mapping)
 
 extension Color {
