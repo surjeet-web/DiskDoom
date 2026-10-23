@@ -93,6 +93,9 @@ struct SunburstView: View {
                     Label("Browse this level", systemImage: "list.bullet")
                 }
                 .help("Select a folder; folders with children open the next level")
+                Text("Color = folder · icon = category")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 CategoryLegend(categories: NodeCategory.allCases)
             }

@@ -79,7 +79,7 @@ struct TreemapView: View {
                 }
             }
             HStack {
-                Text("Click to inspect · double-click to open a folder")
+                Text("Color = folder · icon = category · double-click to open")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
